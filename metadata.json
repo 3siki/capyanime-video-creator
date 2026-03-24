@@ -1,0 +1,8 @@
+{
+  "name": "CapyAnime Video Creator",
+  "description": "Create YouTube Shorts and Long-form videos featuring a Capybara in Japanese anime style with AI-generated scripts, images, and Korean voiceover.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
