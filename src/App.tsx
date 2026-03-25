@@ -128,13 +128,12 @@ export default function App() {
 ⚠️ 중요 — 주인공의 도덕성 판단:
 - 예술가/과학자/탐험가/긍정적 인물 → 카피바라가 그 인물 스타일로 변장
 - 범죄자/마약왕/독재자/부정적 인물 → 카피바라는 그를 쫓는 영웅 역할 (형사, 경찰, 판사, 탐정 등)
-  이 경우 나쁜 인물은 배경/포스터 등으로만 등장, 카피바라는 항상 정의의 편
-- 카피바라는 절대 악당이나 부정적 인물로 묘사하지 않음
+- 카피바라는 절대 악당/부정적 인물로 묘사하지 않음
 
 예시:
 - 지미 헨드릭스: "afro-style puffed fur, psychedelic fringe jacket in purple and orange, electric guitar on back, round tinted sunglasses, peace sign bandana on head"
 - 프레디 머큐리: "pencil mustache drawn on snout, white sleeveless leotard, yellow military jacket draped on shoulders, holding microphone stand"
-- 마약왕/범죄자 주제: "wearing detective trench coat and fedora hat, holding magnifying glass, DEA badge on chest, determined heroic expression" (카피바라 = 정의의 형사)
+- 마약왕/범죄자 주제: "wearing detective trench coat and fedora hat, DEA badge on chest, determined heroic expression"
 - 독재자/악당 주제: "wearing heroic resistance fighter outfit, holding torch of freedom, brave expression"
 - 우주 탐험: "NASA white spacesuit with mission patches, bubble helmet, space boots"
 - 주제가 특별한 인물/테마가 없으면: "" (빈 문자열)
@@ -144,10 +143,18 @@ export default function App() {
 - 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
 - 장면의 소품, 환경 요소 세세하게 묘사
 - 귀엽고 코믹한 애니 느낌의 과장된 표현 활용
-- ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자는 허용 (예: "DEA", "88")
-- 간판이나 포스터가 필요하면 문자 없이 그림/패턴으로만 표현할 것
-좋은 예시: "capybara standing on a moonlit stage with dramatic spotlights, glittering star-shaped confetti raining down, crowd silhouettes below cheering, warm amber and purple stage lighting, decorative star-patterned banners on background walls, smoke machine fog at feet"
-나쁜 예시: "capybara on a stage with Korean text signs"
+- ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용 (예: "DEA", "88")
+- 간판/포스터는 문자 없이 그림/패턴으로만 표현
+
+⚠️ 악당/부정적 인물이 있는 주제의 imagePrompt 추가 규칙:
+- 악당 캐릭터를 반드시 장면에 등장시킬 것 — 카피바라만 나오면 스토리가 성립 안 됨
+- 악당은 과장된 코믹 anime villain으로 묘사 (사악한 표정, 짙은 눈썹, 검은 정장/코트 등)
+- 악당의 외형에 실제 인물의 특징을 코믹하게 반영 (머리 모양, 복장 상징 등)
+- 카피바라(영웅)와 악당이 같은 장면에서 대립/추격/체포 구도를 이룰 것
+- 장면 흐름에 따라: 악당 소굴 수색 → 추격 → 대면 → 체포 순서로 자연스럽게 구성
+
+좋은 예시 (마약왕 주제): "heroic capybara detective in trench coat handcuffing an exaggerated anime villain with slicked-back hair and shifty narrow eyes, dimly lit interrogation room, single harsh overhead lamp, scattered evidence files on the table, tense dramatic atmosphere"
+나쁜 예시: "capybara detective standing alone in a room"
 
 **motionPrompt:** 카메라 움직임 + 캐릭터 행동 + 배경 움직임을 구체적으로 (영어)
 
