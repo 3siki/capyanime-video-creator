@@ -24,13 +24,18 @@ const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video';
 
 // ─── Style Anchors ───────────────────────────────────────────────────────────
 const STYLE_ANCHOR = [
-  'Japanese anime style', 'Studio Ghibli inspired', '2D flat illustration',
-  'bold clean outlines', 'soft cel shading', 'vibrant saturated colors',
-  'cinematic composition', 'high quality',
-  // silhouette rule for consistency
-  'all human figures and characters rendered as pure solid black silhouettes with no facial features no clothing details no skin visible',
-  'only the background environment and objects are in full color',
-  'silhouette style like mystery thriller anime',
+  // character style — stick figure meme comic
+  'stick figure characters with perfectly round white circle heads',
+  'simple minimal line-art bodies with thin arms and legs',
+  'highly exaggerated emotional facial expressions — wide eyes dots tiny mouth or rage face',
+  'Korean internet meme comic style',
+  'rage comic meets anime drama',
+  // background style
+  'dramatic dark backgrounds with fire glow lightning storm or destruction',
+  'vivid high-contrast color palette — deep reds oranges dark blues',
+  'cinematic wide shot composition',
+  '2D digital illustration', 'bold thick outlines', 'high quality',
+  // text suppression
   'absolutely no text', 'no letters', 'no words', 'no Korean', 'no Chinese', 'no Japanese characters',
   'no subtitles', 'no captions', 'no watermarks', 'no labels', 'no signs with writing',
   'no UI elements', 'text-free image',
@@ -129,14 +134,13 @@ export default function App() {
 - 문장은 짧고 리듬감 있게, 한 장면당 2~4문장 이내
 
 **imagePrompt 작성 규칙 (매우 중요):**
-⚠️ 인물/사람 표현 규칙 — 일관성을 위해 실루엣 처리:
-- 등장인물은 반드시 "solid black silhouette figure" 로만 묘사할 것
-- 얼굴, 의상 디테일, 피부색 등 절대 묘사 금지 — 오직 검은 실루엣
-- 인물의 포즈/행동/실루엣 형태로만 상황을 전달 (예: "silhouette of a person raising a fist", "two silhouettes facing each other")
-- 배경, 환경, 소품은 풀컬러 애니 스타일로 풍부하게 묘사
-- 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
-- 긴장감: dramatic back-lighting, long shadows, high contrast
-- 감동/희망: warm golden light silhouetting the figure, soft glow
+⚠️ 인물 표현 규칙 — 스틱피겨 밈 스타일로 일관성 유지:
+- 모든 인물은 반드시 "stick figure with round white circle head" 스타일로 묘사
+- 얼굴: 동그란 흰 원에 점 두 개 눈 + 단순한 입 (분노=이글거리는 눈, 충격=X자 눈 등 과장 표정)
+- 몸: 얇은 선으로 된 팔다리, 의상 디테일 최소화
+- 인물 수와 포즈를 구체적으로 묘사 (예: "crowd of stick figures raising fists", "lone stick figure at cliff edge")
+- 배경은 극적이고 어둡게 — 불꽃, 번개, 폐허, 절벽, 심연 등 상황에 맞게 풍부하게
+- 분위기에 맞는 강렬한 색감 (분노=붉은 하늘, 절망=어두운 폭풍, 희망=황금빛 등)
 - ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용
 
 **motionPrompt:** 카메라 움직임 + 인물 행동 + 배경 변화를 구체적으로 (영어)
