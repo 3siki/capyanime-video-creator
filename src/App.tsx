@@ -20,7 +20,6 @@ import {
 // ─── Models ──────────────────────────────────────────────────────────────────
 const MODEL_SCRIPT = 'claude-sonnet-4-6';
 const MODEL_IMAGE  = 'fal-ai/flux/dev';  // ~$0.025/image, 50스텝, 고품질
-const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video';
 
 // ─── Style Anchors ───────────────────────────────────────────────────────────
 const STYLE_ANCHOR = [
@@ -42,8 +41,6 @@ const STYLE_ANCHOR = [
 ].join(', ');
 
 const buildImagePrompt = (p: string) => `${STYLE_ANCHOR}, ${p}`;
-const buildVideoPrompt = (p: string) =>
-  `${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement, ${p}`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type VideoType  = 'shorts' | 'longform';
@@ -54,7 +51,7 @@ interface Scene {
   id:           string;
   text:         string;
   imagePrompt:  string;
-  motionPrompt: string;
+  motionPrompt?: string;
   imageUrl?:    string;
   videoUrl?:    string;
   imageState:   AssetState;
@@ -143,10 +140,8 @@ export default function App() {
 - 분위기에 맞는 강렬한 색감 (분노=붉은 하늘, 절망=어두운 폭풍, 희망=황금빛 등)
 - ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용
 
-**motionPrompt:** 카메라 움직임 + 인물 행동 + 배경 변화를 구체적으로 (영어)
-
 JSON만 출력:
-{"title":"...","scenes":[{"text":"...","imagePrompt":"...","motionPrompt":"..."}]}`,
+{"title":"...","scenes":[{"text":"...","imagePrompt":"..."}]}`,
         }],
       });
 
@@ -156,12 +151,12 @@ JSON만 출력:
 
       const raw = JSON.parse(jsonMatch[0]) as {
         title: string;
-        scenes: { text: string; imagePrompt: string; motionPrompt: string }[];
+        scenes: { text: string; imagePrompt: string }[];
       };
 
       const scenes: Scene[] = raw.scenes.map((s, i) => ({
         id: `scene-${i}`, text: s.text,
-        imagePrompt: s.imagePrompt, motionPrompt: s.motionPrompt,
+        imagePrompt: s.imagePrompt,
         imageState: 'idle', videoState: 'idle',
       }));
 
@@ -253,14 +248,65 @@ JSON만 출력:
     e.target.value = '';
   };
 
-  // ── Step 3: Generate videos ─────────────────────────────────────────────────
+  // ── Ken Burns zoom clip helper ──────────────────────────────────────────────
+  const makeZoomClip = (imageUrl: string, zoomIn: boolean): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const DURATION = 4;   // seconds
+        const FPS      = 30;
+        const FRAMES   = DURATION * FPS;
+        const ZOOM_MAX = 1.12; // 12% zoom range
+
+        // canvas dimensions match image aspect ratio, capped at 1080p
+        const scale = Math.min(1, 1920 / Math.max(img.width, img.height));
+        const W = Math.round(img.width  * scale);
+        const H = Math.round(img.height * scale);
+
+        const canvas  = document.createElement('canvas');
+        canvas.width  = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d')!;
+
+        const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+          .find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm';
+        const stream   = canvas.captureStream(FPS);
+        const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+        const chunks: Blob[] = [];
+        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = () => resolve(URL.createObjectURL(new Blob(chunks, { type: mimeType })));
+        recorder.onerror = () => reject(new Error('recorder error'));
+        recorder.start();
+
+        let frame = 0;
+        const tick = () => {
+          const t       = frame / (FRAMES - 1);          // 0 → 1
+          const zoom    = zoomIn
+            ? 1 + t * (ZOOM_MAX - 1)                     // 1.00 → 1.12
+            : ZOOM_MAX - t * (ZOOM_MAX - 1);             // 1.12 → 1.00
+          const drawW   = W * zoom;
+          const drawH   = H * zoom;
+          const offsetX = (W - drawW) / 2;
+          const offsetY = (H - drawH) / 2;
+          ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+          frame++;
+          if (frame < FRAMES) requestAnimationFrame(tick);
+          else recorder.stop();
+        };
+        requestAnimationFrame(tick);
+      };
+      img.onerror = () => reject(new Error('image load failed'));
+      img.src = imageUrl;
+    });
+  };
+
+  // ── Step 3: Generate videos (local zoom, no API) ─────────────────────────────
   const generateVideos = async () => {
     if (!script || isLoading) return;
     setIsLoading(true);
     setPhase('video-gen');
     setProgress(0);
-    fal.config({ credentials: FAL_KEY });
-    const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
 
     for (let i = 0; i < script.scenes.length; i++) {
       const scene = script.scenes[i];
@@ -269,38 +315,16 @@ JSON만 출력:
         continue;
       }
       setProgress(Math.round((i / script.scenes.length) * 100));
-      setStatusMsg(`동영상 생성 중... (${i + 1}/${script.scenes.length}) — 장면당 30초~2분 소요`);
+      setStatusMsg(`줌 영상 생성 중... (${i + 1}/${script.scenes.length})`);
       updateScene(i, { videoState: 'loading' });
 
       try {
-        let imageUrl = scene.imageUrl!;
-        if (!imageUrl.startsWith('http')) {
-          const blob = await fetch(imageUrl).then(r => r.blob());
-          imageUrl   = await fal.storage.upload(new File([blob], `scene-${i}.jpg`, { type: 'image/jpeg' }));
-        }
-
-        const result = await fal.subscribe(MODEL_VIDEO, {
-          input: {
-            prompt:       buildVideoPrompt(scene.motionPrompt || scene.imagePrompt),
-            image_url:    imageUrl,
-            duration:     '5',
-            aspect_ratio: aspectRatio,
-          } as any,
-          pollInterval: 4_000,
-        }) as any;
-
-        const videoUri = result?.data?.video?.url as string | undefined;
-        if (videoUri) {
-          const blob = await fetch(videoUri).then(r => r.blob());
-          updateScene(i, { videoUrl: URL.createObjectURL(blob), videoState: 'done' });
-        } else {
-          updateScene(i, { videoState: 'error' });
-        }
+        const videoUrl = await makeZoomClip(scene.imageUrl!, i % 2 === 0);
+        updateScene(i, { videoUrl, videoState: 'done' });
       } catch (e: any) {
-        console.error('Video error:', e);
+        console.error('Zoom clip error:', e);
         updateScene(i, { videoState: 'error' });
       }
-      await sleep(300);
     }
 
     setProgress(100);
@@ -312,26 +336,12 @@ JSON만 출력:
   // ── Retry single video ──────────────────────────────────────────────────────
   const retryVideo = async (idx: number) => {
     if (!script) return;
-    const scene       = script.scenes[idx];
-    const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
+    const scene = script.scenes[idx];
+    if (scene.imageState !== 'done') return;
     updateScene(idx, { videoState: 'loading' });
-    fal.config({ credentials: FAL_KEY });
-
     try {
-      let imageUrl = scene.imageUrl!;
-      if (!imageUrl.startsWith('http')) {
-        const blob = await fetch(imageUrl).then(r => r.blob());
-        imageUrl   = await fal.storage.upload(new File([blob], `scene-${idx}.jpg`, { type: 'image/jpeg' }));
-      }
-      const result = await fal.subscribe(MODEL_VIDEO, {
-        input: { prompt: buildVideoPrompt(scene.motionPrompt || scene.imagePrompt), image_url: imageUrl, duration: '5', aspect_ratio: aspectRatio } as any,
-        pollInterval: 4_000,
-      }) as any;
-      const videoUri = result?.data?.video?.url as string | undefined;
-      if (videoUri) {
-        const blob = await fetch(videoUri).then(r => r.blob());
-        updateScene(idx, { videoUrl: URL.createObjectURL(blob), videoState: 'done' });
-      } else updateScene(idx, { videoState: 'error' });
+      const videoUrl = await makeZoomClip(scene.imageUrl!, idx % 2 === 0);
+      updateScene(idx, { videoUrl, videoState: 'done' });
     } catch (e) { updateScene(idx, { videoState: 'error' }); }
   };
 
