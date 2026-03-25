@@ -7,18 +7,20 @@
 import { useState } from 'react';
 import Anthropic from '@anthropic-ai/sdk';
 import { fal } from '@fal-ai/client';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles, Play, Pause, Download, Loader2,
   ChevronRight, ChevronLeft, AlertCircle, Clock,
   Film, CheckCircle2, ImageIcon,
-  Video, Key, Wand2, RotateCcw, RefreshCw,
+  Video, Key, Wand2, RotateCcw, RefreshCw, Merge,
 } from 'lucide-react';
 
 // ─── AI Model IDs ────────────────────────────────────────────────────────────
 const MODEL_SCRIPT = 'claude-sonnet-4-6';
 const MODEL_IMAGE  = 'fal-ai/flux/schnell';
-const MODEL_VIDEO  = 'fal-ai/ltx-video-v095/image-to-video';  // ~$0.04/클립
+const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video'; // $0.14/클립
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,8 +30,8 @@ type GenStep    = 'idle' | 'script' | 'assets' | 'video' | 'done';
 
 interface Scene {
   id:          string;
-  text:        string;         // Korean narration
-  imagePrompt: string;         // English image prompt
+  text:        string;
+  imagePrompt: string;
   imageUrl?:   string;
   videoUrl?:   string;
   imageState:  AssetState;
@@ -52,20 +54,19 @@ export default function App() {
   const FAL_KEY       = process.env.FAL_KEY ?? '';
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [topic,        setTopic]        = useState('');
-  const [videoType,    setVideoType]    = useState<VideoType>('shorts');
-  const [genStep,      setGenStep]      = useState<GenStep>('idle');
-  const [progress,     setProgress]     = useState(0);
-  const [statusMsg,    setStatusMsg]    = useState('');
-  const [script,       setScript]       = useState<GeneratedScript | null>(null);
-  const [activeIdx,    setActiveIdx]    = useState(0);
-  const [isPlaying,    setIsPlaying]    = useState(false);
-  const [error,        setError]        = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-
-  // ── Auto-advance slideshow ──────────────────────────────────────────────────
-  // (Plays through scenes every 5s when isPlaying is true)
-  // Handled via video autoplay loop + manual controls
+  const [topic,          setTopic]          = useState('');
+  const [videoType,      setVideoType]      = useState<VideoType>('shorts');
+  const [genStep,        setGenStep]        = useState<GenStep>('idle');
+  const [progress,       setProgress]       = useState(0);
+  const [statusMsg,      setStatusMsg]      = useState('');
+  const [script,         setScript]         = useState<GeneratedScript | null>(null);
+  const [activeIdx,      setActiveIdx]      = useState(0);
+  const [isPlaying,      setIsPlaying]      = useState(false);
+  const [error,          setError]          = useState<string | null>(null);
+  const [isGenerating,   setIsGenerating]   = useState(false);
+  const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
+  const [isMerging,      setIsMerging]      = useState(false);
+  const [mergeProgress,  setMergeProgress]  = useState('');
 
   // ── Generation pipeline ─────────────────────────────────────────────────────
   const generate = async () => {
@@ -78,13 +79,11 @@ export default function App() {
     setIsGenerating(true);
     setError(null);
     setScript(null);
+    setMergedVideoUrl(null);
     setActiveIdx(0);
     setIsPlaying(false);
 
-    const client = new Anthropic({
-      apiKey: ANTHROPIC_KEY,
-      dangerouslyAllowBrowser: true,
-    });
+    const client = new Anthropic({ apiKey: ANTHROPIC_KEY, dangerouslyAllowBrowser: true });
 
     try {
       // ── Step 1: Script via Claude ───────────────────────────────────────────
@@ -92,7 +91,7 @@ export default function App() {
       setProgress(5);
       setStatusMsg('Claude가 대본을 작성하고 있어요...');
 
-      const sceneRange = videoType === 'shorts' ? '6~8' : '15~20';
+      const sceneRange  = videoType === 'shorts' ? '6~8' : '15~20';
       const formatLabel = videoType === 'shorts' ? '60초 숏츠' : '5분 롱폼';
 
       const scriptMsg = await client.messages.create({
@@ -114,8 +113,7 @@ export default function App() {
         }],
       });
 
-      const rawText = scriptMsg.content[0].type === 'text' ? scriptMsg.content[0].text : '';
-      // Extract JSON even if Claude adds a small preamble
+      const rawText   = scriptMsg.content[0].type === 'text' ? scriptMsg.content[0].text : '';
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('스크립트 파싱 실패 — JSON을 찾을 수 없습니다.');
 
@@ -136,7 +134,7 @@ export default function App() {
       setScript({ ...draft });
       setProgress(15);
 
-      // ── Step 2: Image per scene (fal.ai Flux Schnell) ──────────────────────
+      // ── Step 2: Image per scene (fal.ai Flux, 최대 3회 재시도) ─────────────
       setGenStep('assets');
       fal.config({ credentials: FAL_KEY });
       const imageSize = videoType === 'shorts' ? 'portrait_16_9' : 'landscape_16_9';
@@ -149,30 +147,36 @@ export default function App() {
         scene.imageState = 'loading';
         setScript({ ...draft, scenes: [...scenes] });
 
-        try {
-          const imgRes = await fal.subscribe(MODEL_IMAGE, {
-            input: {
-              prompt: `Japanese anime style, cute fluffy capybara as protagonist, vibrant colors, cinematic lighting, high quality illustration, no text, no watermarks, no subtitles. ${scene.imagePrompt}`,
-              image_size: imageSize,
-              num_images: 1,
-              num_inference_steps: 4,
-            },
-          }) as any;
+        let success = false;
+        for (let attempt = 0; attempt < 3 && !success; attempt++) {
+          try {
+            if (attempt > 0) {
+              setStatusMsg(`이미지 재시도 중... (${i + 1}/${scenes.length}, ${attempt + 1}번째)`);
+              await sleep(1500);
+            }
+            const imgRes = await fal.subscribe(MODEL_IMAGE, {
+              input: {
+                prompt: `Japanese anime style, cute fluffy capybara as protagonist, vibrant colors, cinematic lighting, high quality illustration, no text, no watermarks, no subtitles. ${scene.imagePrompt}`,
+                image_size: imageSize,
+                num_images: 1,
+                num_inference_steps: 4,
+              },
+            }) as any;
 
-          const imageUrl = imgRes?.data?.images?.[0]?.url as string | undefined;
-          if (imageUrl) {
-            scene.imageUrl   = imageUrl;
-            scene.imageState = 'done';
-          } else {
-            scene.imageState = 'error';
+            const imageUrl = imgRes?.data?.images?.[0]?.url as string | undefined;
+            if (imageUrl) {
+              scene.imageUrl   = imageUrl;
+              scene.imageState = 'done';
+              success = true;
+            }
+          } catch (e) {
+            console.error(`Image attempt ${attempt + 1} error:`, e);
           }
-        } catch (e) {
-          console.error('Image error:', e);
-          scene.imageState = 'error';
         }
 
+        if (!success) scene.imageState = 'error';
         setScript({ ...draft, scenes: [...scenes] });
-        await sleep(300);
+        await sleep(200);
       }
 
       // ── Step 3: Video per scene (fal.ai Kling v1.6) ───────────────────────
@@ -182,6 +186,12 @@ export default function App() {
       if (FAL_KEY) {
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i];
+          if (scene.imageState !== 'done') {
+            scene.videoState = 'error';
+            setScript({ ...draft, scenes: [...scenes] });
+            continue;
+          }
+
           setProgress(67 + (i / scenes.length) * 30);
           setStatusMsg(`동영상 생성 중... (${i + 1}/${scenes.length}) — 장면당 30초~2분 소요`);
 
@@ -190,26 +200,26 @@ export default function App() {
 
           try {
             let imageUrl: string | undefined;
-            if (scene.imageUrl) {
-              if (scene.imageUrl.startsWith('http')) {
-                imageUrl = scene.imageUrl;
-              } else {
-                const res  = await fetch(scene.imageUrl);
-                const blob = await res.blob();
-                const file = new File([blob], `scene-${i}.jpg`, { type: 'image/jpeg' });
-                imageUrl   = await fal.storage.upload(file);
-              }
+            if (scene.imageUrl?.startsWith('http')) {
+              imageUrl = scene.imageUrl;
+            } else if (scene.imageUrl) {
+              const res  = await fetch(scene.imageUrl);
+              const blob = await res.blob();
+              const file = new File([blob], `scene-${i}.jpg`, { type: 'image/jpeg' });
+              imageUrl   = await fal.storage.upload(file);
             }
 
             if (!imageUrl) throw new Error('이미지가 없어 영상 생성 불가');
 
+            const motionPrompt = `Japanese anime style, cute fluffy capybara character, smooth cinematic animation with dynamic camera movement — slow pan, gentle zoom, subtle parallax, vibrant colors, high quality, no text, no watermarks. ${scene.imagePrompt}`;
+
             const result = await fal.subscribe(MODEL_VIDEO, {
               input: {
-                prompt: `Japanese anime style, cute fluffy capybara character, smooth cinematic animation, vibrant colors, high quality, no text, no watermarks. ${scene.imagePrompt}`,
-                image_url:   imageUrl,
-                resolution:  aspectRatio === '9:16' ? '480p' : '720p',
-                aspect_ratio: aspectRatio as any,
-              },
+                prompt:       motionPrompt,
+                image_url:    imageUrl,
+                duration:     '5',
+                aspect_ratio: aspectRatio,
+              } as any,
               pollInterval: 4_000,
             }) as any;
 
@@ -229,9 +239,6 @@ export default function App() {
           setScript({ ...draft, scenes: [...scenes] });
           await sleep(300);
         }
-      } else {
-        scenes.forEach(s => { s.videoState = 'skipped' as any; });
-        setScript({ ...draft, scenes: [...scenes] });
       }
 
       setGenStep('done');
@@ -250,35 +257,33 @@ export default function App() {
   // ── Retry a single scene's video ───────────────────────────────────────────
   const retryVideo = async (idx: number) => {
     if (!script || !FAL_KEY) return;
-    const scenes = [...script.scenes];
-    const scene  = scenes[idx];
+    const scenes     = [...script.scenes];
+    const scene      = scenes[idx];
+    const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
+
     scene.videoState = 'loading';
     setScript({ ...script, scenes });
-
     fal.config({ credentials: FAL_KEY });
-    const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
 
     try {
       let imageUrl: string | undefined;
-      if (scene.imageUrl) {
-        if (scene.imageUrl.startsWith('http')) {
-          imageUrl = scene.imageUrl;
-        } else {
-          const res  = await fetch(scene.imageUrl);
-          const blob = await res.blob();
-          const file = new File([blob], `scene-${idx}.jpg`, { type: 'image/jpeg' });
-          imageUrl   = await fal.storage.upload(file);
-        }
+      if (scene.imageUrl?.startsWith('http')) {
+        imageUrl = scene.imageUrl;
+      } else if (scene.imageUrl) {
+        const res  = await fetch(scene.imageUrl);
+        const blob = await res.blob();
+        const file = new File([blob], `scene-${idx}.jpg`, { type: 'image/jpeg' });
+        imageUrl   = await fal.storage.upload(file);
       }
       if (!imageUrl) throw new Error('이미지 없음');
 
       const result = await fal.subscribe(MODEL_VIDEO, {
         input: {
-          prompt: `Japanese anime style, cute fluffy capybara character, smooth cinematic animation, vibrant colors, high quality, no text. ${scene.imagePrompt}`,
+          prompt:       `Japanese anime style, cute fluffy capybara character, smooth cinematic animation with dynamic camera movement — slow pan, gentle zoom, vibrant colors, high quality, no text. ${scene.imagePrompt}`,
           image_url:    imageUrl,
-          resolution:   videoType === 'shorts' ? '480p' : '720p',
-          aspect_ratio: (videoType === 'shorts' ? '9:16' : '16:9') as any,
-        },
+          duration:     '5',
+          aspect_ratio: aspectRatio,
+        } as any,
         pollInterval: 4_000,
       }) as any;
 
@@ -296,6 +301,50 @@ export default function App() {
     }
 
     setScript({ ...script, scenes });
+  };
+
+  // ── Merge all videos into one ───────────────────────────────────────────────
+  const mergeVideos = async () => {
+    if (!script || isMerging) return;
+    const readyScenes = script.scenes.filter(s => s.videoUrl);
+    if (readyScenes.length === 0) return;
+
+    setIsMerging(true);
+    setMergedVideoUrl(null);
+
+    try {
+      setMergeProgress('FFmpeg 로딩 중... (첫 실행시 30초 소요)');
+      const ffmpeg  = new FFmpeg();
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`,   'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+
+      setMergeProgress('영상 파일 처리 중...');
+      for (let i = 0; i < readyScenes.length; i++) {
+        setMergeProgress(`영상 불러오는 중... (${i + 1}/${readyScenes.length})`);
+        await ffmpeg.writeFile(`input${i}.mp4`, await fetchFile(readyScenes[i].videoUrl!));
+      }
+
+      // concat list
+      const concatList = readyScenes.map((_, i) => `file 'input${i}.mp4'`).join('\n');
+      await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatList));
+
+      setMergeProgress('영상 합치는 중...');
+      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'output.mp4']);
+
+      const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
+      const blob = new Blob([data], { type: 'video/mp4' });
+      setMergedVideoUrl(URL.createObjectURL(blob));
+      setMergeProgress('완성!');
+    } catch (e: any) {
+      console.error('Merge error:', e);
+      setMergeProgress('합치기 실패: ' + (e.message ?? '알 수 없는 오류'));
+    } finally {
+      setIsMerging(false);
+    }
   };
 
   // ── Download helpers ────────────────────────────────────────────────────────
@@ -317,10 +366,19 @@ export default function App() {
     }
   };
 
+  const downloadMerged = () => {
+    if (!mergedVideoUrl) return;
+    const a   = document.createElement('a');
+    a.href     = mergedVideoUrl;
+    a.download = `capyanime-merged.mp4`;
+    a.click();
+  };
+
   // ── Derived ─────────────────────────────────────────────────────────────────
   const isIdle    = !isGenerating;
   const scene     = script?.scenes[activeIdx];
   const stepOrder: GenStep[] = ['script', 'assets', 'video', 'done'];
+  const videosDone = script?.scenes.filter(s => s.videoState === 'done').length ?? 0;
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -399,8 +457,8 @@ export default function App() {
                 <p className="text-xs text-amber-200/55 leading-relaxed">
                   프로젝트 루트에{' '}
                   <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">.env.local</code>
-                  {' '}파일을 만들고{' '}
-                  <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">ANTHROPIC_API_KEY=발급받은_키</code>
+                  {' '}파일에{' '}
+                  <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">ANTHROPIC_API_KEY</code>
                   {' '}를 추가한 뒤 서버를 재시작하세요.
                 </p>
               </div>
@@ -410,8 +468,6 @@ export default function App() {
 
         {/* ── Controls ── */}
         <section className="max-w-xl mx-auto space-y-5">
-
-          {/* Topic input */}
           <div className="space-y-2">
             <label className="text-[11px] font-semibold uppercase tracking-widest text-white/30">
               영상 주제
@@ -430,7 +486,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Video type */}
           <div className="space-y-2">
             <label className="text-[11px] font-semibold uppercase tracking-widest text-white/30">
               영상 형식
@@ -463,26 +518,18 @@ export default function App() {
             </div>
           </div>
 
-          {/* Generate button */}
           <button
             onClick={generate}
             disabled={!topic.trim() || isGenerating || !ANTHROPIC_KEY}
             className="w-full py-4 bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl font-display font-bold text-lg shadow-xl shadow-orange-500/15 hover:shadow-orange-500/30 hover:brightness-110 hover:scale-[1.015] active:scale-[0.99] transition-all disabled:opacity-35 disabled:hover:scale-100 disabled:hover:brightness-100 disabled:shadow-none flex items-center justify-center gap-2.5"
           >
             {isGenerating ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                AI가 열심히 만들고 있어요...
-              </>
+              <><Loader2 className="w-5 h-5 animate-spin" />AI가 열심히 만들고 있어요...</>
             ) : (
-              <>
-                <Sparkles className="w-5 h-5" />
-                영상 만들기 시작
-              </>
+              <><Sparkles className="w-5 h-5" />영상 만들기 시작</>
             )}
           </button>
 
-          {/* Error message */}
           <AnimatePresence>
             {error && (
               <motion.div
@@ -509,16 +556,12 @@ export default function App() {
               {/* Header row */}
               <div className="flex items-end justify-between gap-4 flex-wrap">
                 <div>
-                  <p className="text-[11px] uppercase tracking-widest text-white/25 mb-1.5">
-                    완성된 영상
-                  </p>
-                  <h2 className="font-display font-bold text-xl sm:text-2xl leading-tight">
-                    {script.title}
-                  </h2>
+                  <p className="text-[11px] uppercase tracking-widest text-white/25 mb-1.5">완성된 영상</p>
+                  <h2 className="font-display font-bold text-xl sm:text-2xl leading-tight">{script.title}</h2>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
-                    onClick={() => { setScript(null); setGenStep('idle'); setError(null); }}
+                    onClick={() => { setScript(null); setGenStep('idle'); setError(null); setMergedVideoUrl(null); }}
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white/40 bg-white/[0.04] border border-white/[0.07] hover:bg-white/[0.07] hover:text-white/60 transition-all"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
@@ -531,15 +574,71 @@ export default function App() {
                     <Download className="w-3.5 h-3.5" />
                     전체 다운로드
                   </button>
+
+                  {/* 영상 합치기 버튼 */}
+                  <button
+                    onClick={mergeVideos}
+                    disabled={isMerging || videosDone === 0}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-violet-500/10 border border-violet-500/30 text-violet-400 hover:bg-violet-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isMerging
+                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />합치는 중...</>
+                      : <><Merge className="w-3.5 h-3.5" />영상 합치기 ({videosDone}개)</>
+                    }
+                  </button>
+
+                  {/* 합친 영상 다운로드 */}
+                  {mergedVideoUrl && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      onClick={downloadMerged}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      합친 영상 다운로드
+                    </motion.button>
+                  )}
                 </div>
               </div>
+
+              {/* Merge progress / merged preview */}
+              <AnimatePresence>
+                {(isMerging || mergedVideoUrl || mergeProgress) && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="p-4 bg-violet-500/8 border border-violet-500/20 rounded-2xl space-y-3"
+                  >
+                    {isMerging && (
+                      <div className="flex items-center gap-2 text-violet-400 text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                        {mergeProgress}
+                      </div>
+                    )}
+                    {mergedVideoUrl && !isMerging && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          영상 합치기 완료!
+                        </p>
+                        <video
+                          src={mergedVideoUrl}
+                          controls
+                          className="w-full max-w-lg rounded-xl border border-white/[0.07]"
+                        />
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Main two-column layout */}
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
 
                 {/* ── Left: Scene viewer ── */}
                 <div className="xl:col-span-2 space-y-4">
-                  {/* Video / image preview */}
                   <div className={`relative bg-black rounded-3xl overflow-hidden border border-white/[0.07] shadow-2xl ${
                     videoType === 'shorts'
                       ? 'aspect-[9/16] max-w-[300px] mx-auto xl:mx-0'
@@ -556,17 +655,9 @@ export default function App() {
                           className="absolute inset-0"
                         >
                           {scene.videoUrl ? (
-                            <video
-                              src={scene.videoUrl}
-                              autoPlay loop muted
-                              className="w-full h-full object-cover"
-                            />
+                            <video src={scene.videoUrl} autoPlay loop muted className="w-full h-full object-cover" />
                           ) : scene.imageUrl ? (
-                            <img
-                              src={scene.imageUrl}
-                              className="w-full h-full object-cover"
-                              alt={`장면 ${activeIdx + 1}`}
-                            />
+                            <img src={scene.imageUrl} className="w-full h-full object-cover" alt={`장면 ${activeIdx + 1}`} />
                           ) : (
                             <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/20">
                               <Loader2 className="w-8 h-8 animate-spin" />
@@ -587,16 +678,12 @@ export default function App() {
                         >
                           <ChevronLeft className="w-4 h-4" />
                         </button>
-
                         <button
                           onClick={() => setIsPlaying(p => !p)}
                           className="w-10 h-10 rounded-full bg-orange-500 hover:bg-orange-400 flex items-center justify-center transition-all shadow-lg shadow-orange-500/30"
                         >
-                          {isPlaying
-                            ? <Pause className="w-4 h-4" />
-                            : <Play className="w-4 h-4 ml-0.5" />}
+                          {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                         </button>
-
                         <button
                           onClick={() => setActiveIdx(i => Math.min((script?.scenes.length ?? 1) - 1, i + 1))}
                           disabled={activeIdx === (script?.scenes.length ?? 1) - 1}
@@ -605,7 +692,6 @@ export default function App() {
                           <ChevronRight className="w-4 h-4" />
                         </button>
                       </div>
-
                       <div className="flex items-center gap-1.5">
                         <span className="text-[11px] text-white/40 font-medium tabular-nums">
                           {activeIdx + 1} / {script.scenes.length}
@@ -623,9 +709,7 @@ export default function App() {
 
                   {/* Narration text */}
                   <div className="p-4 bg-white/[0.03] border border-white/[0.07] rounded-2xl">
-                    <p className="text-[11px] font-semibold uppercase tracking-widest text-white/25 mb-2">
-                      나레이션
-                    </p>
+                    <p className="text-[11px] font-semibold uppercase tracking-widest text-white/25 mb-2">나레이션</p>
                     <p className="text-sm text-white/70 leading-relaxed">{scene?.text}</p>
                   </div>
 
@@ -675,7 +759,6 @@ export default function App() {
                           : 'bg-white/[0.025] border-white/[0.06] hover:bg-white/[0.045] hover:border-white/10'
                       }`}
                     >
-                      {/* Thumbnail */}
                       <div className="relative w-[52px] h-[52px] rounded-xl overflow-hidden bg-white/[0.05] flex-shrink-0">
                         {sc.imageUrl ? (
                           <img src={sc.imageUrl} className="w-full h-full object-cover" alt="" />
@@ -693,17 +776,11 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Info */}
                       <div className="flex-1 min-w-0 py-0.5 space-y-1.5">
-                        <p className={`text-[11px] font-semibold ${
-                          i === activeIdx ? 'text-orange-400' : 'text-white/30'
-                        }`}>
+                        <p className={`text-[11px] font-semibold ${i === activeIdx ? 'text-orange-400' : 'text-white/30'}`}>
                           장면 {i + 1}
                         </p>
-                        <p className="text-[11px] text-white/45 leading-relaxed line-clamp-2">
-                          {sc.text}
-                        </p>
-                        {/* Status dots */}
+                        <p className="text-[11px] text-white/45 leading-relaxed line-clamp-2">{sc.text}</p>
                         <div className="flex gap-1">
                           {([sc.imageState, sc.videoState] as AssetState[]).map((st, si) => (
                             <span
@@ -730,7 +807,7 @@ export default function App() {
       {/* ── Footer ── */}
       <footer className="border-t border-white/[0.05] mt-20 py-8 text-center">
         <p className="text-white/20 text-xs">
-          Capy Anime Creator · Powered by Claude AI, fal.ai Flux &amp; Kling
+          Capy Anime Creator · Powered by Claude AI, fal.ai Flux &amp; Kling v1.6
         </p>
       </footer>
 
@@ -745,7 +822,6 @@ export default function App() {
             className="fixed bottom-0 inset-x-0 z-50 p-4 pb-5 bg-[#0d0d0d]/95 border-t border-white/[0.08] backdrop-blur-xl"
           >
             <div className="max-w-2xl mx-auto space-y-2.5">
-              {/* Step pills */}
               <div className="flex items-center gap-3 flex-wrap">
                 {([
                   { step: 'script', label: '대본',   emoji: '📝' },
@@ -773,7 +849,6 @@ export default function App() {
                 <span className="ml-auto text-xs text-white/40 font-medium">{statusMsg}</span>
               </div>
 
-              {/* Progress bar + % */}
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-1.5 bg-white/[0.07] rounded-full overflow-hidden">
                   <motion.div
