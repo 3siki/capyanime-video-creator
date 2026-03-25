@@ -33,9 +33,10 @@ const STYLE_ANCHOR = [
   'comic expressive mood', 'high quality', 'no text', 'no watermarks', 'no subtitles',
 ].join(', ');
 
-const buildImagePrompt = (p: string) => `${CHAR_ANCHOR}, ${STYLE_ANCHOR}, ${p}`;
-const buildVideoPrompt = (p: string) =>
-  `${CHAR_ANCHOR}, ${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement, character moves and reacts expressively, ${p}`;
+const buildImagePrompt = (p: string, characterStyle?: string) =>
+  `${CHAR_ANCHOR}${characterStyle ? `, ${characterStyle}` : ''}, ${STYLE_ANCHOR}, ${p}`;
+const buildVideoPrompt = (p: string, characterStyle?: string) =>
+  `${CHAR_ANCHOR}${characterStyle ? `, ${characterStyle}` : ''}, ${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement, character moves and reacts expressively, ${p}`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type VideoType  = 'shorts' | 'longform';
@@ -53,7 +54,7 @@ interface Scene {
   videoState:   AssetState;
 }
 
-interface Script { title: string; scenes: Scene[]; }
+interface Script { title: string; scenes: Scene[]; characterStyle?: string; }
 
 // ─── Util ────────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -114,15 +115,29 @@ export default function App() {
           content: `주제: "${topic}"
 
 유튜브 ${formatLabel} (${sceneRange}장면) 애니메이션 대본을 작성해줘.
-주인공: 귀엽고 통통한 카피바라, 일본 애니메이션 스타일.
+주인공: 귀엽고 통통한 카피바라 캐릭터. 귀엽고 코믹한 일본 애니메이션 스타일이 기본.
 
-각 장면에 3가지 포함:
-- text: 나레이션 (한국어, 친근하고 재미있게, 1~2문장)
-- imagePrompt: 정지 이미지 묘사 (영어, 장면 배경과 구도, 글자 금지)
-- motionPrompt: 영상 움직임 묘사 (영어, 캐릭터 구체적 행동 + 카메라 움직임 + 배경 움직임, 생동감 있게)
+**characterStyle 작성 규칙:**
+주제에 맞게 카피바라의 외형을 스타일링해줘 (의상, 소품, 헤어스타일 등).
+예시:
+- 지미 헨드릭스: "afro-style puffed fur, psychedelic fringe jacket in purple and orange, electric guitar on back, round tinted sunglasses, peace sign bandana on head"
+- 프레디 머큐리: "pencil mustache drawn on snout, white sleeveless leotard, yellow military jacket draped on shoulders, holding microphone stand"
+- 우주 탐험: "NASA white spacesuit with mission patches, bubble helmet, space boots"
+- 주제가 특별한 인물/테마가 없으면: "" (빈 문자열)
+
+**imagePrompt 작성 규칙 (매우 중요):**
+- 배경을 구체적이고 풍부하게 묘사할 것 (단순 배경 금지)
+- 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
+- 장면의 소품, 환경 요소 세세하게 묘사
+- 귀엽고 코믹한 애니 느낌의 과장된 표현 활용
+- 글자/텍스트/자막 절대 금지
+좋은 예시: "capybara standing on a moonlit stage with dramatic spotlights, glittering star-shaped confetti raining down, crowd silhouettes below cheering, warm amber and purple stage lighting, vintage concert posters on background walls, smoke machine fog at feet"
+나쁜 예시: "capybara on a stage"
+
+**motionPrompt:** 카메라 움직임 + 캐릭터 행동 + 배경 움직임을 구체적으로 (영어)
 
 JSON만 출력:
-{"title":"...","scenes":[{"text":"...","imagePrompt":"...","motionPrompt":"..."}]}`,
+{"title":"...","characterStyle":"...","scenes":[{"text":"...","imagePrompt":"...","motionPrompt":"..."}]}`,
         }],
       });
 
@@ -132,6 +147,7 @@ JSON만 출력:
 
       const raw = JSON.parse(jsonMatch[0]) as {
         title: string;
+        characterStyle?: string;
         scenes: { text: string; imagePrompt: string; motionPrompt: string }[];
       };
 
@@ -141,7 +157,7 @@ JSON만 출력:
         imageState: 'idle', videoState: 'idle',
       }));
 
-      setScript({ title: raw.title, scenes });
+      setScript({ title: raw.title, characterStyle: raw.characterStyle ?? '', scenes });
       setPhase('script-review');
     } catch (e: any) {
       setError(e.message ?? '스크립트 생성 실패');
@@ -170,7 +186,7 @@ JSON만 출력:
           if (attempt > 0) await sleep(1500);
           const res = await fal.subscribe(MODEL_IMAGE, {
             input: {
-              prompt: buildImagePrompt(script.scenes[i].imagePrompt),
+              prompt: buildImagePrompt(script.scenes[i].imagePrompt, script.characterStyle),
               image_size: imageSize,
               num_images: 1,
               num_inference_steps: 4,
@@ -202,7 +218,7 @@ JSON만 출력:
         if (attempt > 0) await sleep(1500);
         const res = await fal.subscribe(MODEL_IMAGE, {
           input: {
-            prompt: buildImagePrompt(script.scenes[idx].imagePrompt),
+            prompt: buildImagePrompt(script.scenes[idx].imagePrompt, script.characterStyle),
             image_size: imageSize, num_images: 1, num_inference_steps: 4,
           },
         }) as any;
@@ -256,7 +272,7 @@ JSON만 출력:
 
         const result = await fal.subscribe(MODEL_VIDEO, {
           input: {
-            prompt:       buildVideoPrompt(scene.motionPrompt || scene.imagePrompt),
+            prompt:       buildVideoPrompt(scene.motionPrompt || scene.imagePrompt, script.characterStyle),
             image_url:    imageUrl,
             duration:     '5',
             aspect_ratio: aspectRatio,
@@ -299,7 +315,7 @@ JSON만 출력:
         imageUrl   = await fal.storage.upload(new File([blob], `scene-${idx}.jpg`, { type: 'image/jpeg' }));
       }
       const result = await fal.subscribe(MODEL_VIDEO, {
-        input: { prompt: buildVideoPrompt(scene.motionPrompt || scene.imagePrompt), image_url: imageUrl, duration: '5', aspect_ratio: aspectRatio } as any,
+        input: { prompt: buildVideoPrompt(scene.motionPrompt || scene.imagePrompt, script.characterStyle), image_url: imageUrl, duration: '5', aspect_ratio: aspectRatio } as any,
         pollInterval: 4_000,
       }) as any;
       const videoUri = result?.data?.video?.url as string | undefined;
@@ -557,6 +573,20 @@ JSON만 출력:
               <Pencil className="w-3.5 h-3.5" />
               나레이션과 이미지 프롬프트를 직접 수정할 수 있어요. 수정 후 이미지 생성을 시작하세요.
             </p>
+
+            {/* Character Style */}
+            <div className="bg-orange-500/6 border border-orange-500/20 rounded-2xl p-4 space-y-2">
+              <label className="text-[11px] font-semibold text-orange-400/70 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />캐릭터 스타일 (전체 영상 공통)
+              </label>
+              <textarea
+                value={script.characterStyle ?? ''}
+                onChange={e => setScript(prev => prev ? { ...prev, characterStyle: e.target.value } : prev)}
+                rows={2}
+                placeholder="주제에 맞는 의상/소품/헤어 스타일... (비워두면 기본 카피바라)"
+                className="w-full bg-white/[0.04] border border-white/[0.07] rounded-xl px-3.5 py-2.5 text-sm text-orange-200/60 font-mono text-xs placeholder:text-white/15 focus:outline-none focus:ring-1 focus:ring-orange-500/30 resize-none transition-all"
+              />
+            </div>
 
             <div className="space-y-3">
               {script.scenes.map((sc, i) => (
