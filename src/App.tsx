@@ -7,6 +7,8 @@
 import { useState, useRef } from 'react';
 import Anthropic from '@anthropic-ai/sdk';
 import { fal } from '@fal-ai/client';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles, Play, Pause, Download, Loader2,
@@ -389,7 +391,34 @@ JSON만 출력:
 
       recorder.stop();
       await new Promise<void>(r => { recorder.onstop = () => r(); });
-      setMergedVideoUrl(URL.createObjectURL(new Blob(chunks, { type: mimeType })));
+
+      const webmBlob = new Blob(chunks, { type: mimeType });
+
+      // ── WebM → MP4 via ffmpeg.wasm ─────────────────────────────────────────
+      setMergeMsg('MP4 변환 중... (첫 실행시 30초 소요)');
+      try {
+        const ffmpeg  = new FFmpeg();
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`,   'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        setMergeMsg('MP4 인코딩 중...');
+        await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+        await ffmpeg.exec([
+          '-i', 'input.webm',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+          '-movflags', '+faststart',
+          '-an',
+          'output.mp4',
+        ]);
+        const mp4Data = await ffmpeg.readFile('output.mp4') as Uint8Array;
+        setMergedVideoUrl(URL.createObjectURL(new Blob([mp4Data], { type: 'video/mp4' })));
+      } catch (ffmpegErr) {
+        // ffmpeg 실패 시 WebM으로 폴백
+        console.warn('MP4 변환 실패, WebM으로 대체:', ffmpegErr);
+        setMergedVideoUrl(URL.createObjectURL(webmBlob));
+      }
       setMergeMsg('완성!');
     } catch (e: any) {
       setMergeMsg('실패: ' + (e.message ?? '오류'));
@@ -414,7 +443,7 @@ JSON만 출력:
 
   const downloadMerged = () => {
     if (!mergedVideoUrl) return;
-    const a = document.createElement('a'); a.href = mergedVideoUrl; a.download = 'capyanime-merged.webm'; a.click();
+    const a = document.createElement('a'); a.href = mergedVideoUrl; a.download = 'capyanime-merged.mp4'; a.click();
   };
 
   // ── Derived ─────────────────────────────────────────────────────────────────
