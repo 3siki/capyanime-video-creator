@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
     define: {
       'process.env.ANTHROPIC_API_KEY': JSON.stringify(env.ANTHROPIC_API_KEY ?? ''),
       'process.env.FAL_KEY':           JSON.stringify(env.FAL_KEY ?? ''),
+      'process.env.ELEVENLABS_KEY':    JSON.stringify(env.ELEVENLABS_KEY ?? ''),
     },
     resolve: {
       alias: {

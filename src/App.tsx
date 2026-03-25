@@ -21,6 +21,10 @@ import {
 const MODEL_SCRIPT = 'claude-sonnet-4-6';
 const MODEL_IMAGE  = 'fal-ai/flux/dev';  // ~$0.025/image, 50스텝, 고품질
 
+// ─── ElevenLabs TTS ──────────────────────────────────────────────────────────
+const TTS_MODEL   = 'eleven_multilingual_v2';
+const TTS_VOICE   = 'pNInz6obpgDQGcFmaJgB'; // Adam — 자연스러운 남성 나레이터
+
 // ─── Style Anchors ───────────────────────────────────────────────────────────
 const STYLE_ANCHOR = [
   // character style — stick figure meme comic
@@ -53,8 +57,10 @@ interface Scene {
   imagePrompt:  string;
   motionPrompt?: string;
   imageUrl?:    string;
+  audioUrl?:    string;
   videoUrl?:    string;
   imageState:   AssetState;
+  audioState:   AssetState;
   videoState:   AssetState;
 }
 
@@ -65,8 +71,9 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? '';
-  const FAL_KEY       = process.env.FAL_KEY ?? '';
+  const ANTHROPIC_KEY   = process.env.ANTHROPIC_API_KEY ?? '';
+  const FAL_KEY         = process.env.FAL_KEY ?? '';
+  const ELEVENLABS_KEY  = process.env.ELEVENLABS_KEY ?? '';
 
   const [phase,         setPhase]         = useState<AppPhase>('input');
   const [topic,         setTopic]         = useState('');
@@ -157,7 +164,7 @@ JSON만 출력:
       const scenes: Scene[] = raw.scenes.map((s, i) => ({
         id: `scene-${i}`, text: s.text,
         imagePrompt: s.imagePrompt,
-        imageState: 'idle', videoState: 'idle',
+        imageState: 'idle', audioState: 'idle', videoState: 'idle',
       }));
 
       setScript({ title: raw.title, scenes });
@@ -248,78 +255,146 @@ JSON만 출력:
     e.target.value = '';
   };
 
-  // ── Ken Burns zoom clip helper ──────────────────────────────────────────────
-  const makeZoomClip = (imageUrl: string, zoomIn: boolean): Promise<string> => {
-    return new Promise((resolve, reject) => {
+  // ── ElevenLabs TTS ──────────────────────────────────────────────────────────
+  const generateTTSForScene = async (text: string): Promise<string> => {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${TTS_VOICE}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': ELEVENLABS_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        model_id: TTS_MODEL,
+        voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.3, use_speaker_boost: true },
+      }),
+    });
+    if (!res.ok) throw new Error(`TTS 오류 ${res.status}`);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  };
+
+  // ── Ken Burns zoom clip (이미지 + 오디오 → WebM) ───────────────────────────
+  const makeZoomClip = (imageUrl: string, zoomIn: boolean, audioUrl?: string): Promise<string> => {
+    return new Promise(async (resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const DURATION = 4;   // seconds
-        const FPS      = 30;
-        const FRAMES   = DURATION * FPS;
-        const ZOOM_MAX = 1.12; // 12% zoom range
 
-        // canvas dimensions match image aspect ratio, capped at 1080p
-        const scale = Math.min(1, 1920 / Math.max(img.width, img.height));
-        const W = Math.round(img.width  * scale);
-        const H = Math.round(img.height * scale);
+      img.onload = async () => {
+        try {
+          const FPS      = 30;
+          const ZOOM_MAX = 1.12;
 
-        const canvas  = document.createElement('canvas');
-        canvas.width  = W;
-        canvas.height = H;
-        const ctx = canvas.getContext('2d')!;
+          // 오디오 길이에 맞춰 클립 길이 결정
+          let audioBuffer: AudioBuffer | null = null;
+          let audioCtx: AudioContext | null = null;
+          let DURATION = 4;
 
-        const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-          .find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm';
-        const stream   = canvas.captureStream(FPS);
-        const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
-        const chunks: Blob[] = [];
-        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-        recorder.onstop = () => resolve(URL.createObjectURL(new Blob(chunks, { type: mimeType })));
-        recorder.onerror = () => reject(new Error('recorder error'));
-        recorder.start();
+          if (audioUrl) {
+            audioCtx = new AudioContext();
+            const arrayBuf = await fetch(audioUrl).then(r => r.arrayBuffer());
+            audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
+            DURATION = audioBuffer.duration + 0.4; // 끝에 여유
+          }
 
-        let frame = 0;
-        const tick = () => {
-          const t       = frame / (FRAMES - 1);          // 0 → 1
-          const zoom    = zoomIn
-            ? 1 + t * (ZOOM_MAX - 1)                     // 1.00 → 1.12
-            : ZOOM_MAX - t * (ZOOM_MAX - 1);             // 1.12 → 1.00
-          const drawW   = W * zoom;
-          const drawH   = H * zoom;
-          const offsetX = (W - drawW) / 2;
-          const offsetY = (H - drawH) / 2;
-          ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
-          frame++;
-          if (frame < FRAMES) requestAnimationFrame(tick);
-          else recorder.stop();
-        };
-        requestAnimationFrame(tick);
+          const FRAMES = Math.round(DURATION * FPS);
+          const scale  = Math.min(1, 1920 / Math.max(img.width, img.height));
+          const W = Math.round(img.width  * scale);
+          const H = Math.round(img.height * scale);
+
+          const canvas = document.createElement('canvas');
+          canvas.width = W; canvas.height = H;
+          const ctx = canvas.getContext('2d')!;
+
+          // 오디오 스트림 준비
+          const videoStream = canvas.captureStream(FPS);
+          let recordStream: MediaStream = videoStream;
+
+          if (audioCtx && audioBuffer) {
+            const dest   = audioCtx.createMediaStreamDestination();
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(dest);
+            source.start(0);
+            recordStream = new MediaStream([
+              ...videoStream.getVideoTracks(),
+              ...dest.stream.getAudioTracks(),
+            ]);
+          }
+
+          const mimeType = [
+            'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm',
+          ].find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm';
+
+          const recorder = new MediaRecorder(recordStream, { mimeType, videoBitsPerSecond: 8_000_000 });
+          const chunks: Blob[] = [];
+          recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+          recorder.onstop = () => {
+            audioCtx?.close();
+            resolve(URL.createObjectURL(new Blob(chunks, { type: mimeType })));
+          };
+          recorder.onerror = () => reject(new Error('recorder error'));
+          recorder.start();
+
+          let frame = 0;
+          const tick = () => {
+            const t     = frame / Math.max(FRAMES - 1, 1);
+            const zoom  = zoomIn
+              ? 1 + t * (ZOOM_MAX - 1)
+              : ZOOM_MAX - t * (ZOOM_MAX - 1);
+            const drawW   = W * zoom;
+            const drawH   = H * zoom;
+            const offsetX = (W - drawW) / 2;
+            const offsetY = (H - drawH) / 2;
+            ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+            frame++;
+            if (frame < FRAMES) requestAnimationFrame(tick);
+            else recorder.stop();
+          };
+          requestAnimationFrame(tick);
+        } catch (e) { reject(e); }
       };
       img.onerror = () => reject(new Error('image load failed'));
       img.src = imageUrl;
     });
   };
 
-  // ── Step 3: Generate videos (local zoom, no API) ─────────────────────────────
+  // ── Step 3: TTS + 줌 영상 생성 ───────────────────────────────────────────────
   const generateVideos = async () => {
     if (!script || isLoading) return;
     setIsLoading(true);
     setPhase('video-gen');
     setProgress(0);
 
-    for (let i = 0; i < script.scenes.length; i++) {
-      const scene = script.scenes[i];
-      if (scene.imageState !== 'done') {
-        updateScene(i, { videoState: 'error' });
-        continue;
-      }
-      setProgress(Math.round((i / script.scenes.length) * 100));
-      setStatusMsg(`줌 영상 생성 중... (${i + 1}/${script.scenes.length})`);
-      updateScene(i, { videoState: 'loading' });
+    const total = script.scenes.length;
 
+    // 3-a. TTS 생성
+    if (ELEVENLABS_KEY) {
+      for (let i = 0; i < total; i++) {
+        setStatusMsg(`나레이션 생성 중... (${i + 1}/${total})`);
+        setProgress(Math.round((i / total) * 50));
+        updateScene(i, { audioState: 'loading' });
+        try {
+          const audioUrl = await generateTTSForScene(script.scenes[i].text);
+          updateScene(i, { audioUrl, audioState: 'done' });
+        } catch (e) {
+          console.error('TTS error:', e);
+          updateScene(i, { audioState: 'error' });
+        }
+      }
+    }
+
+    // 최신 scenes 스냅샷 가져오기
+    const scenes = (await new Promise<Scene[]>(r =>
+      setScript(prev => { r(prev?.scenes ?? []); return prev; })
+    ));
+
+    // 3-b. 줌 클립 생성
+    for (let i = 0; i < total; i++) {
+      const scene = scenes[i];
+      if (scene.imageState !== 'done') { updateScene(i, { videoState: 'error' }); continue; }
+      setProgress(50 + Math.round((i / total) * 50));
+      setStatusMsg(`영상 생성 중... (${i + 1}/${total})`);
+      updateScene(i, { videoState: 'loading' });
       try {
-        const videoUrl = await makeZoomClip(scene.imageUrl!, i % 2 === 0);
+        const videoUrl = await makeZoomClip(scene.imageUrl!, i % 2 === 0, scene.audioUrl);
         updateScene(i, { videoUrl, videoState: 'done' });
       } catch (e: any) {
         console.error('Zoom clip error:', e);
@@ -340,7 +415,7 @@ JSON만 출력:
     if (scene.imageState !== 'done') return;
     updateScene(idx, { videoState: 'loading' });
     try {
-      const videoUrl = await makeZoomClip(scene.imageUrl!, idx % 2 === 0);
+      const videoUrl = await makeZoomClip(scene.imageUrl!, idx % 2 === 0, scene.audioUrl);
       updateScene(idx, { videoUrl, videoState: 'done' });
     } catch (e) { updateScene(idx, { videoState: 'error' }); }
   };
@@ -412,8 +487,8 @@ JSON만 출력:
         await ffmpeg.exec([
           '-i', 'input.webm',
           '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+          '-c:a', 'aac', '-b:a', '128k',
           '-movflags', '+faststart',
-          '-an',
           'output.mp4',
         ]);
         const mp4Data = await ffmpeg.readFile('output.mp4') as Uint8Array;
