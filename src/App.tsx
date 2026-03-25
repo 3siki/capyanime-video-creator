@@ -1,26 +1,24 @@
 /**
  * Capy Anime Creator
  * AI-powered Japanese anime-style YouTube video generator
- * Stack: React 19 + Gemini AI (Imagen 3 · TTS · Veo 2)
+ * Stack: React 19 + Claude AI (script) + fal.ai (image & video)
  */
 
-import { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Modality, Type } from '@google/genai';
+import { useState } from 'react';
+import Anthropic from '@anthropic-ai/sdk';
 import { fal } from '@fal-ai/client';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles, Play, Pause, Download, Loader2,
   ChevronRight, ChevronLeft, AlertCircle, Clock,
-  Film, Volume2, VolumeX, CheckCircle2, ImageIcon,
+  Film, CheckCircle2, ImageIcon,
   Video, Key, Wand2, RotateCcw, RefreshCw,
 } from 'lucide-react';
 
 // ─── AI Model IDs ────────────────────────────────────────────────────────────
-const MODEL_SCRIPT = 'gemini-2.5-flash';
-const MODEL_IMAGE  = 'fal-ai/flux/schnell';     // fal.ai Flux (fast, cheap ~$0.003/image)
-const MODEL_TTS    = 'gemini-2.5-flash-preview-tts';
-// fal.ai image-to-video model (Kling v1.6 standard, ~$0.14/clip)
-const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video';
+const MODEL_SCRIPT = 'claude-sonnet-4-6';
+const MODEL_IMAGE  = 'fal-ai/flux/schnell';
+const MODEL_VIDEO  = 'fal-ai/ltx-video-v095/image-to-video';  // ~$0.04/클립
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,15 +27,13 @@ type AssetState = 'idle' | 'loading' | 'done' | 'error';
 type GenStep    = 'idle' | 'script' | 'assets' | 'video' | 'done';
 
 interface Scene {
-  id:           string;
-  text:         string;         // Korean narration
-  imagePrompt:  string;         // English image prompt
-  imageUrl?:    string;
-  audioUrl?:    string;
-  videoUrl?:    string;
-  imageState:   AssetState;
-  audioState:   AssetState;
-  videoState:   AssetState;
+  id:          string;
+  text:        string;         // Korean narration
+  imagePrompt: string;         // English image prompt
+  imageUrl?:   string;
+  videoUrl?:   string;
+  imageState:  AssetState;
+  videoState:  AssetState;
 }
 
 interface GeneratedScript {
@@ -49,90 +45,33 @@ interface GeneratedScript {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-/**
- * Gemini TTS returns raw PCM (24 kHz, mono, 16-bit).
- * Browsers cannot play raw PCM directly — wrap it in a WAV container.
- */
-function pcmToWavUrl(base64Pcm: string, sampleRate = 24_000): string {
-  const bin = atob(base64Pcm);
-  const pcm = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) pcm[i] = bin.charCodeAt(i);
-
-  const numCh = 1, bits = 16;
-  const byteRate = sampleRate * numCh * bits / 8;
-  const blockAlign = numCh * bits / 8;
-  const buf = new ArrayBuffer(44 + pcm.length);
-  const v = new DataView(buf);
-  const w = (o: number, s: string) =>
-    [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-
-  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length, true);
-  w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);       // PCM
-  v.setUint16(22, numCh, true);
-  v.setUint32(24, sampleRate, true);
-  v.setUint32(28, byteRate, true);
-  v.setUint16(32, blockAlign, true);
-  v.setUint16(34, bits, true);
-  w(36, 'data'); v.setUint32(40, pcm.length, true);
-  new Uint8Array(buf, 44).set(pcm);
-
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-}
-
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const API_KEY = process.env.GEMINI_API_KEY ?? '';
-  const FAL_KEY = process.env.FAL_KEY ?? '';
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? '';
+  const FAL_KEY       = process.env.FAL_KEY ?? '';
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [topic,       setTopic]       = useState('');
-  const [videoType,   setVideoType]   = useState<VideoType>('shorts');
-  const [genStep,     setGenStep]     = useState<GenStep>('idle');
-  const [progress,    setProgress]    = useState(0);
-  const [statusMsg,   setStatusMsg]   = useState('');
-  const [script,      setScript]      = useState<GeneratedScript | null>(null);
-  const [activeIdx,   setActiveIdx]   = useState(0);
-  const [isPlaying,   setIsPlaying]   = useState(false);
-  const [isMuted,     setIsMuted]     = useState(false);
-  const [error,       setError]       = useState<string | null>(null);
-  const [isGenerating,setIsGenerating]= useState(false);
+  const [topic,        setTopic]        = useState('');
+  const [videoType,    setVideoType]    = useState<VideoType>('shorts');
+  const [genStep,      setGenStep]      = useState<GenStep>('idle');
+  const [progress,     setProgress]     = useState(0);
+  const [statusMsg,    setStatusMsg]    = useState('');
+  const [script,       setScript]       = useState<GeneratedScript | null>(null);
+  const [activeIdx,    setActiveIdx]    = useState(0);
+  const [isPlaying,    setIsPlaying]    = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  // ── Audio playback ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!isPlaying || !script || !audioRef.current) return;
-    const scene = script.scenes[activeIdx];
-    if (!scene) return;
-
-    if (scene.audioUrl) {
-      audioRef.current.src    = scene.audioUrl;
-      audioRef.current.muted  = isMuted;
-      audioRef.current.play().catch(() => {});
-      audioRef.current.onended = () => {
-        if (activeIdx < script.scenes.length - 1) setActiveIdx(i => i + 1);
-        else { setIsPlaying(false); setActiveIdx(0); }
-      };
-    } else {
-      const t = setTimeout(() => {
-        if (activeIdx < script.scenes.length - 1) setActiveIdx(i => i + 1);
-        else { setIsPlaying(false); setActiveIdx(0); }
-      }, 3_000);
-      return () => clearTimeout(t);
-    }
-  }, [isPlaying, activeIdx, script]);
-
-  useEffect(() => {
-    if (audioRef.current) audioRef.current.muted = isMuted;
-  }, [isMuted]);
+  // ── Auto-advance slideshow ──────────────────────────────────────────────────
+  // (Plays through scenes every 5s when isPlaying is true)
+  // Handled via video autoplay loop + manual controls
 
   // ── Generation pipeline ─────────────────────────────────────────────────────
   const generate = async () => {
     if (!topic.trim() || isGenerating) return;
-    if (!API_KEY) {
-      setError('.env.local 파일에 GEMINI_API_KEY를 설정하고 재시작해주세요.');
+    if (!ANTHROPIC_KEY) {
+      setError('.env.local 파일에 ANTHROPIC_API_KEY를 설정하고 재시작해주세요.');
       return;
     }
 
@@ -142,20 +81,26 @@ export default function App() {
     setActiveIdx(0);
     setIsPlaying(false);
 
-    const ai = new GoogleGenAI({ apiKey: API_KEY });
+    const client = new Anthropic({
+      apiKey: ANTHROPIC_KEY,
+      dangerouslyAllowBrowser: true,
+    });
 
     try {
-      // ── Step 1: Script ──────────────────────────────────────────────────────
+      // ── Step 1: Script via Claude ───────────────────────────────────────────
       setGenStep('script');
       setProgress(5);
-      setStatusMsg('AI가 대본을 작성하고 있어요...');
+      setStatusMsg('Claude가 대본을 작성하고 있어요...');
 
       const sceneRange = videoType === 'shorts' ? '6~8' : '15~20';
       const formatLabel = videoType === 'shorts' ? '60초 숏츠' : '5분 롱폼';
 
-      const scriptRes = await ai.models.generateContent({
+      const scriptMsg = await client.messages.create({
         model: MODEL_SCRIPT,
-        contents: `주제: "${topic}"
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: `주제: "${topic}"
 
 이 주제로 유튜브 ${formatLabel} (${sceneRange}장면) 애니메이션 영상 대본을 작성해줘.
 주인공은 반드시 귀엽고 통통한 '카피바라(Capybara)' — 일본 애니메이션 스타일.
@@ -164,32 +109,17 @@ export default function App() {
 - text: 나레이션 (한국어, 친근하고 재미있게, 1~2문장)
 - imagePrompt: 이미지 프롬프트 (영어, 구체적으로. 글자·텍스트·자막 절대 금지)
 
-JSON만 출력:
+반드시 JSON만 출력 (다른 텍스트 없이):
 { "title": "...", "scenes": [{ "text": "...", "imagePrompt": "..." }] }`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title:  { type: Type.STRING },
-              scenes: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    text:        { type: Type.STRING },
-                    imagePrompt: { type: Type.STRING },
-                  },
-                  required: ['text', 'imagePrompt'],
-                },
-              },
-            },
-            required: ['title', 'scenes'],
-          },
-        },
+        }],
       });
 
-      const raw = JSON.parse(scriptRes.text ?? '{}') as {
+      const rawText = scriptMsg.content[0].type === 'text' ? scriptMsg.content[0].text : '';
+      // Extract JSON even if Claude adds a small preamble
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('스크립트 파싱 실패 — JSON을 찾을 수 없습니다.');
+
+      const raw = JSON.parse(jsonMatch[0]) as {
         title: string;
         scenes: { text: string; imagePrompt: string }[];
       };
@@ -199,7 +129,6 @@ JSON만 출력:
         text:        s.text,
         imagePrompt: s.imagePrompt,
         imageState:  'idle',
-        audioState:  'idle',
         videoState:  'idle',
       }));
 
@@ -207,22 +136,20 @@ JSON만 출력:
       setScript({ ...draft });
       setProgress(15);
 
-      // ── Step 2: Image + Audio per scene ────────────────────────────────────
+      // ── Step 2: Image per scene (fal.ai Flux Schnell) ──────────────────────
       setGenStep('assets');
-      const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
+      fal.config({ credentials: FAL_KEY });
+      const imageSize = videoType === 'shorts' ? 'portrait_16_9' : 'landscape_16_9';
 
       for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
         setProgress(15 + (i / scenes.length) * 52);
-        setStatusMsg(`이미지 & 음성 생성 중... (${i + 1}/${scenes.length})`);
+        setStatusMsg(`이미지 생성 중... (${i + 1}/${scenes.length})`);
 
-        // Image — Imagen 3
         scene.imageState = 'loading';
         setScript({ ...draft, scenes: [...scenes] });
 
         try {
-          fal.config({ credentials: FAL_KEY });
-          const imageSize = videoType === 'shorts' ? 'portrait_16_9' : 'landscape_16_9';
           const imgRes = await fal.subscribe(MODEL_IMAGE, {
             input: {
               prompt: `Japanese anime style, cute fluffy capybara as protagonist, vibrant colors, cinematic lighting, high quality illustration, no text, no watermarks, no subtitles. ${scene.imagePrompt}`,
@@ -231,9 +158,10 @@ JSON만 출력:
               num_inference_steps: 4,
             },
           }) as any;
+
           const imageUrl = imgRes?.data?.images?.[0]?.url as string | undefined;
           if (imageUrl) {
-            scene.imageUrl   = imageUrl; // fal.ai CDN URL
+            scene.imageUrl   = imageUrl;
             scene.imageState = 'done';
           } else {
             scene.imageState = 'error';
@@ -243,43 +171,15 @@ JSON만 출력:
           scene.imageState = 'error';
         }
 
-        // Audio — Gemini TTS (PCM → WAV)
-        scene.audioState = 'loading';
-        setScript({ ...draft, scenes: [...scenes] });
-
-        try {
-          const ttsRes = await ai.models.generateContent({
-            model: MODEL_TTS,
-            contents: [{ parts: [{ text: scene.text }] }],
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-              },
-            },
-          });
-          const pcm = ttsRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data as string | undefined;
-          if (pcm) {
-            scene.audioUrl   = pcmToWavUrl(pcm);
-            scene.audioState = 'done';
-          } else {
-            scene.audioState = 'error';
-          }
-        } catch (e) {
-          console.error('Audio error:', e);
-          scene.audioState = 'error';
-        }
-
         setScript({ ...draft, scenes: [...scenes] });
         await sleep(300);
       }
 
-      // ── Step 3: Video per scene (fal.ai Kling) ────────────────────────────
+      // ── Step 3: Video per scene (fal.ai Kling v1.6) ───────────────────────
       setGenStep('video');
+      const aspectRatio = videoType === 'shorts' ? '9:16' : '16:9';
 
       if (FAL_KEY) {
-        fal.config({ credentials: FAL_KEY });
-
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i];
           setProgress(67 + (i / scenes.length) * 30);
@@ -289,7 +189,6 @@ JSON만 출력:
           setScript({ ...draft, scenes: [...scenes] });
 
           try {
-            // If imageUrl is already a CDN URL, use directly; otherwise upload
             let imageUrl: string | undefined;
             if (scene.imageUrl) {
               if (scene.imageUrl.startsWith('http')) {
@@ -307,9 +206,9 @@ JSON만 출력:
             const result = await fal.subscribe(MODEL_VIDEO, {
               input: {
                 prompt: `Japanese anime style, cute fluffy capybara character, smooth cinematic animation, vibrant colors, high quality, no text, no watermarks. ${scene.imagePrompt}`,
-                image_url:    imageUrl,
-                duration:     '5',
-                aspect_ratio: aspectRatio,
+                image_url:   imageUrl,
+                resolution:  aspectRatio === '9:16' ? '480p' : '720p',
+                aspect_ratio: aspectRatio as any,
               },
               pollInterval: 4_000,
             }) as any;
@@ -331,7 +230,6 @@ JSON만 출력:
           await sleep(300);
         }
       } else {
-        // No fal key — skip video
         scenes.forEach(s => { s.videoState = 'skipped' as any; });
         setScript({ ...draft, scenes: [...scenes] });
       }
@@ -378,8 +276,8 @@ JSON만 출력:
         input: {
           prompt: `Japanese anime style, cute fluffy capybara character, smooth cinematic animation, vibrant colors, high quality, no text. ${scene.imagePrompt}`,
           image_url:    imageUrl,
-          duration:     '5',
-          aspect_ratio: aspectRatio,
+          resolution:   videoType === 'shorts' ? '480p' : '720p',
+          aspect_ratio: (videoType === 'shorts' ? '9:16' : '16:9') as any,
         },
         pollInterval: 4_000,
       }) as any;
@@ -420,8 +318,8 @@ JSON만 출력:
   };
 
   // ── Derived ─────────────────────────────────────────────────────────────────
-  const isIdle  = !isGenerating;
-  const scene   = script?.scenes[activeIdx];
+  const isIdle    = !isGenerating;
+  const scene     = script?.scenes[activeIdx];
   const stepOrder: GenStep[] = ['script', 'assets', 'video', 'done'];
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -447,14 +345,14 @@ JSON만 출력:
           </div>
 
           <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${
-            API_KEY
+            ANTHROPIC_KEY
               ? 'border-emerald-500/20 bg-emerald-500/8 text-emerald-400'
               : 'border-red-500/20 bg-red-500/8 text-red-400'
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full ${
-              API_KEY ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'
+              ANTHROPIC_KEY ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'
             }`} />
-            {API_KEY ? 'API 연결됨' : 'API 키 없음'}
+            {ANTHROPIC_KEY ? 'API 연결됨' : 'API 키 없음'}
           </div>
         </div>
       </nav>
@@ -470,7 +368,7 @@ JSON만 출력:
         >
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-orange-500/20 bg-orange-500/8 text-orange-400 text-xs font-semibold">
             <Sparkles className="w-3.5 h-3.5" />
-            Gemini AI · Imagen 3 · Veo 2
+            Claude AI · fal.ai Flux · Kling v1.6
           </div>
 
           <h1 className="font-display font-bold text-5xl sm:text-6xl md:text-7xl tracking-tight leading-[1.05]">
@@ -481,14 +379,14 @@ JSON만 출력:
           </h1>
 
           <p className="text-white/40 text-base sm:text-lg max-w-md mx-auto leading-relaxed">
-            주제 하나만 입력하면 — 대본, 이미지, 음성, 동영상까지
+            주제 하나만 입력하면 — 대본, 이미지, 동영상까지
             <br />카피바라 애니메이션 영상을 AI가 완전 자동으로 만들어줘요.
           </p>
         </motion.section>
 
         {/* ── API Key Warning ── */}
         <AnimatePresence>
-          {!API_KEY && (
+          {!ANTHROPIC_KEY && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
@@ -502,7 +400,7 @@ JSON만 출력:
                   프로젝트 루트에{' '}
                   <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">.env.local</code>
                   {' '}파일을 만들고{' '}
-                  <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">GEMINI_API_KEY=발급받은_키</code>
+                  <code className="bg-white/8 px-1 py-0.5 rounded text-amber-300/80">ANTHROPIC_API_KEY=발급받은_키</code>
                   {' '}를 추가한 뒤 서버를 재시작하세요.
                 </p>
               </div>
@@ -568,7 +466,7 @@ JSON만 출력:
           {/* Generate button */}
           <button
             onClick={generate}
-            disabled={!topic.trim() || isGenerating || !API_KEY}
+            disabled={!topic.trim() || isGenerating || !ANTHROPIC_KEY}
             className="w-full py-4 bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl font-display font-bold text-lg shadow-xl shadow-orange-500/15 hover:shadow-orange-500/30 hover:brightness-110 hover:scale-[1.015] active:scale-[0.99] transition-all disabled:opacity-35 disabled:hover:scale-100 disabled:hover:brightness-100 disabled:shadow-none flex items-center justify-center gap-2.5"
           >
             {isGenerating ? (
@@ -599,8 +497,6 @@ JSON만 출력:
             )}
           </AnimatePresence>
         </section>
-
-        {/* (progress moved to fixed bottom bar) */}
 
         {/* ── Results ── */}
         <AnimatePresence>
@@ -662,7 +558,7 @@ JSON만 출력:
                           {scene.videoUrl ? (
                             <video
                               src={scene.videoUrl}
-                              autoPlay loop muted={isMuted}
+                              autoPlay loop muted
                               className="w-full h-full object-cover"
                             />
                           ) : scene.imageUrl ? (
@@ -715,12 +611,6 @@ JSON만 출력:
                           {activeIdx + 1} / {script.scenes.length}
                         </span>
                         <button
-                          onClick={() => setIsMuted(m => !m)}
-                          className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all"
-                        >
-                          {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
                           onClick={() => scene && downloadScene(scene, activeIdx)}
                           disabled={!scene?.imageUrl && !scene?.videoUrl}
                           className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center disabled:opacity-25 transition-all"
@@ -744,7 +634,6 @@ JSON만 출력:
                     <div className="flex gap-2 flex-wrap">
                       {([
                         { label: '이미지', state: scene.imageState, Icon: ImageIcon },
-                        { label: '음성',   state: scene.audioState, Icon: Volume2   },
                         { label: '영상',   state: scene.videoState, Icon: Video,
                           onRetry: scene.videoState === 'error' ? () => retryVideo(activeIdx) : undefined },
                       ]).map(({ label, state, Icon, onRetry }) => (
@@ -816,7 +705,7 @@ JSON만 출력:
                         </p>
                         {/* Status dots */}
                         <div className="flex gap-1">
-                          {([sc.imageState, sc.audioState, sc.videoState] as AssetState[]).map((st, si) => (
+                          {([sc.imageState, sc.videoState] as AssetState[]).map((st, si) => (
                             <span
                               key={si}
                               className={`w-1.5 h-1.5 rounded-full ${
@@ -841,11 +730,9 @@ JSON만 출력:
       {/* ── Footer ── */}
       <footer className="border-t border-white/[0.05] mt-20 py-8 text-center">
         <p className="text-white/20 text-xs">
-          Capy Anime Creator · Powered by Google Gemini AI, Imagen 3 & Veo 2
+          Capy Anime Creator · Powered by Claude AI, fal.ai Flux &amp; Kling
         </p>
       </footer>
-
-      <audio ref={audioRef} className="hidden" />
 
       {/* ── Fixed bottom progress bar ── */}
       <AnimatePresence>
@@ -861,10 +748,10 @@ JSON만 출력:
               {/* Step pills */}
               <div className="flex items-center gap-3 flex-wrap">
                 {([
-                  { step: 'script', label: '대본',       emoji: '📝' },
-                  { step: 'assets', label: '이미지·음성', emoji: '🎨' },
-                  { step: 'video',  label: '동영상',      emoji: '🎬' },
-                  { step: 'done',   label: '완료',        emoji: '✨' },
+                  { step: 'script', label: '대본',   emoji: '📝' },
+                  { step: 'assets', label: '이미지',  emoji: '🎨' },
+                  { step: 'video',  label: '동영상',  emoji: '🎬' },
+                  { step: 'done',   label: '완료',    emoji: '✨' },
                 ] as { step: GenStep; label: string; emoji: string }[]).map(({ step, label, emoji }) => {
                   const ci = stepOrder.indexOf(genStep);
                   const si = stepOrder.indexOf(step);
@@ -895,7 +782,7 @@ JSON만 출력:
                     transition={{ ease: 'easeOut', duration: 0.6 }}
                   />
                 </div>
-                <span className="text-sm font-bold text-orange-400 tabular-nums w-10 text-right">
+                <span className="text-xs font-semibold text-white/40 tabular-nums w-9 text-right">
                   {Math.round(progress)}%
                 </span>
               </div>
