@@ -119,9 +119,18 @@ export default function App() {
 
 **characterStyle 작성 규칙:**
 주제에 맞게 카피바라의 외형을 스타일링해줘 (의상, 소품, 헤어스타일 등).
+
+⚠️ 중요 — 주인공의 도덕성 판단:
+- 예술가/과학자/탐험가/긍정적 인물 → 카피바라가 그 인물 스타일로 변장
+- 범죄자/마약왕/독재자/부정적 인물 → 카피바라는 그를 쫓는 영웅 역할 (형사, 경찰, 판사, 탐정 등)
+  이 경우 나쁜 인물은 배경/포스터 등으로만 등장, 카피바라는 항상 정의의 편
+- 카피바라는 절대 악당이나 부정적 인물로 묘사하지 않음
+
 예시:
 - 지미 헨드릭스: "afro-style puffed fur, psychedelic fringe jacket in purple and orange, electric guitar on back, round tinted sunglasses, peace sign bandana on head"
 - 프레디 머큐리: "pencil mustache drawn on snout, white sleeveless leotard, yellow military jacket draped on shoulders, holding microphone stand"
+- 마약왕/범죄자 주제: "wearing detective trench coat and fedora hat, holding magnifying glass, DEA badge on chest, determined heroic expression" (카피바라 = 정의의 형사)
+- 독재자/악당 주제: "wearing heroic resistance fighter outfit, holding torch of freedom, brave expression"
 - 우주 탐험: "NASA white spacesuit with mission patches, bubble helmet, space boots"
 - 주제가 특별한 인물/테마가 없으면: "" (빈 문자열)
 
@@ -722,9 +731,15 @@ JSON만 출력:
 
                   {/* Info & actions */}
                   <div className="p-3 space-y-2.5">
-                    <p className="text-[11px] text-white/35 leading-relaxed line-clamp-3 font-mono">
-                      {sc.imagePrompt}
-                    </p>
+                    {/* 한국어 나레이션 */}
+                    <p className="text-xs text-white/60 leading-relaxed border-b border-white/[0.06] pb-2">{sc.text}</p>
+                    {/* 이미지 프롬프트 편집 */}
+                    <textarea
+                      value={sc.imagePrompt}
+                      onChange={e => updateScene(i, { imagePrompt: e.target.value })}
+                      rows={2}
+                      className="w-full bg-white/[0.04] border border-white/[0.07] rounded-lg px-2.5 py-2 text-[11px] text-white/35 font-mono placeholder:text-white/15 focus:outline-none focus:ring-1 focus:ring-orange-500/25 focus:text-white/55 resize-none transition-all"
+                    />
                     <div className="flex gap-2">
                       <button onClick={() => regenerateImage(i)} disabled={sc.imageState === 'loading'}
                         className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.1] disabled:opacity-40 transition-all">
