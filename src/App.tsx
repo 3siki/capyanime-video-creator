@@ -22,26 +22,19 @@ const MODEL_SCRIPT = 'claude-sonnet-4-6';
 const MODEL_IMAGE  = 'fal-ai/flux/dev';  // ~$0.025/image, 50스텝, 고품질
 const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video';
 
-// ─── Character & Style Anchors ───────────────────────────────────────────────
-const CHAR_ANCHOR = [
-  'single capybara character', 'round chubby body', 'short stubby legs',
-  'small rounded ears', 'tiny expressive black dot eyes', 'warm medium-brown fur',
-  'slightly open calm smile', 'chibi anime proportions', 'large head small body ratio',
-].join(', ');
-
+// ─── Style Anchors ───────────────────────────────────────────────────────────
 const STYLE_ANCHOR = [
   'Japanese anime style', 'Studio Ghibli inspired', '2D flat illustration',
   'bold clean outlines', 'soft cel shading', 'vibrant saturated colors',
-  'comic expressive mood', 'high quality',
+  'cinematic composition', 'high quality',
   'absolutely no text', 'no letters', 'no words', 'no Korean', 'no Chinese', 'no Japanese characters',
   'no subtitles', 'no captions', 'no watermarks', 'no labels', 'no signs with writing',
   'no UI elements', 'text-free image',
 ].join(', ');
 
-const buildImagePrompt = (p: string, characterStyle?: string) =>
-  `${CHAR_ANCHOR}${characterStyle ? `, ${characterStyle}` : ''}, ${STYLE_ANCHOR}, ${p}`;
-const buildVideoPrompt = (p: string, characterStyle?: string) =>
-  `${CHAR_ANCHOR}${characterStyle ? `, ${characterStyle}` : ''}, ${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement, character moves and reacts expressively, ${p}`;
+const buildImagePrompt = (p: string) => `${STYLE_ANCHOR}, ${p}`;
+const buildVideoPrompt = (p: string) =>
+  `${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement, ${p}`;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type VideoType  = 'shorts' | 'longform';
@@ -59,7 +52,7 @@ interface Scene {
   videoState:   AssetState;
 }
 
-interface Script { title: string; scenes: Scene[]; characterStyle?: string; }
+interface Script { title: string; scenes: Scene[]; }
 
 // ─── Util ────────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -120,46 +113,22 @@ export default function App() {
           content: `주제: "${topic}"
 
 유튜브 ${formatLabel} (${sceneRange}장면) 애니메이션 대본을 작성해줘.
-주인공: 귀엽고 통통한 카피바라 캐릭터. 귀엽고 코믹한 일본 애니메이션 스타일이 기본.
-
-**characterStyle 작성 규칙:**
-주제에 맞게 카피바라의 외형을 스타일링해줘 (의상, 소품, 헤어스타일 등).
-
-⚠️ 중요 — 주인공의 도덕성 판단:
-- 예술가/과학자/탐험가/긍정적 인물 → 카피바라가 그 인물 스타일로 변장
-- 범죄자/마약왕/독재자/부정적 인물 → 카피바라는 그를 쫓는 영웅 역할 (형사, 경찰, 판사, 탐정 등)
-- 카피바라는 절대 악당/부정적 인물로 묘사하지 않음
-
-예시:
-- 지미 헨드릭스: "afro-style puffed fur, psychedelic fringe jacket in purple and orange, electric guitar on back, round tinted sunglasses, peace sign bandana on head"
-- 프레디 머큐리: "pencil mustache drawn on snout, white sleeveless leotard, yellow military jacket draped on shoulders, holding microphone stand"
-- 마약왕/범죄자 주제: "wearing detective trench coat and fedora hat, DEA badge on chest, determined heroic expression"
-- 독재자/악당 주제: "wearing heroic resistance fighter outfit, holding torch of freedom, brave expression"
-- 우주 탐험: "NASA white spacesuit with mission patches, bubble helmet, space boots"
-- 주제가 특별한 인물/테마가 없으면: "" (빈 문자열)
+스타일: 일본 애니메이션 / Studio Ghibli 감성의 2D 일러스트레이션.
+특정 캐릭터 없이, 장면의 내용과 분위기를 직접적으로 묘사하는 방식으로 구성해.
 
 **imagePrompt 작성 규칙 (매우 중요):**
-- 배경을 구체적이고 풍부하게 묘사할 것 (단순 배경 금지)
+- 장면의 실제 내용을 직접 묘사할 것 — 사람/인물이 등장하면 사람으로 그릴 것
+- 배경, 환경, 소품을 구체적이고 풍부하게 묘사 (단순 배경 금지)
 - 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
-- 장면의 소품, 환경 요소 세세하게 묘사
-- 귀엽고 코믹한 애니 느낌의 과장된 표현 활용
-- ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용 (예: "DEA", "88")
-- 간판/포스터는 문자 없이 그림/패턴으로만 표현
+- 인물은 실제 특징을 애니 스타일로 과장해서 표현 (의상, 헤어, 표정 등)
+- 긴장감 있는 장면: dramatic shadows, intense expressions, dynamic angles
+- 감동적인 장면: warm golden lighting, soft focus, emotional facial expressions
+- ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용
 
-⚠️ 악당/부정적 인물이 있는 주제의 imagePrompt 추가 규칙:
-- 악당 캐릭터를 반드시 장면에 등장시킬 것 — 카피바라만 나오면 스토리가 성립 안 됨
-- 악당은 과장된 코믹 anime villain으로 묘사 (사악한 표정, 짙은 눈썹, 검은 정장/코트 등)
-- 악당의 외형에 실제 인물의 특징을 코믹하게 반영 (머리 모양, 복장 상징 등)
-- 카피바라(영웅)와 악당이 같은 장면에서 대립/추격/체포 구도를 이룰 것
-- 장면 흐름에 따라: 악당 소굴 수색 → 추격 → 대면 → 체포 순서로 자연스럽게 구성
-
-좋은 예시 (마약왕 주제): "heroic capybara detective in trench coat handcuffing an exaggerated anime villain with slicked-back hair and shifty narrow eyes, dimly lit interrogation room, single harsh overhead lamp, scattered evidence files on the table, tense dramatic atmosphere"
-나쁜 예시: "capybara detective standing alone in a room"
-
-**motionPrompt:** 카메라 움직임 + 캐릭터 행동 + 배경 움직임을 구체적으로 (영어)
+**motionPrompt:** 카메라 움직임 + 인물 행동 + 배경 변화를 구체적으로 (영어)
 
 JSON만 출력:
-{"title":"...","characterStyle":"...","scenes":[{"text":"...","imagePrompt":"...","motionPrompt":"..."}]}`,
+{"title":"...","scenes":[{"text":"...","imagePrompt":"...","motionPrompt":"..."}]}`,
         }],
       });
 
@@ -169,7 +138,6 @@ JSON만 출력:
 
       const raw = JSON.parse(jsonMatch[0]) as {
         title: string;
-        characterStyle?: string;
         scenes: { text: string; imagePrompt: string; motionPrompt: string }[];
       };
 
@@ -179,7 +147,7 @@ JSON만 출력:
         imageState: 'idle', videoState: 'idle',
       }));
 
-      setScript({ title: raw.title, characterStyle: raw.characterStyle ?? '', scenes });
+      setScript({ title: raw.title, scenes });
       setPhase('script-review');
     } catch (e: any) {
       setError(e.message ?? '스크립트 생성 실패');
@@ -208,7 +176,7 @@ JSON만 출력:
           if (attempt > 0) await sleep(1500);
           const res = await fal.subscribe(MODEL_IMAGE, {
             input: {
-              prompt: buildImagePrompt(script.scenes[i].imagePrompt, script.characterStyle),
+              prompt: buildImagePrompt(script.scenes[i].imagePrompt),
               image_size: imageSize,
               num_images: 1,
               num_inference_steps: 28,
@@ -241,7 +209,7 @@ JSON만 출력:
         if (attempt > 0) await sleep(1500);
         const res = await fal.subscribe(MODEL_IMAGE, {
           input: {
-            prompt: buildImagePrompt(script.scenes[idx].imagePrompt, script.characterStyle),
+            prompt: buildImagePrompt(script.scenes[idx].imagePrompt),
             image_size: imageSize, num_images: 1, num_inference_steps: 28, guidance_scale: 3.5,
           },
         }) as any;
@@ -295,7 +263,7 @@ JSON만 출력:
 
         const result = await fal.subscribe(MODEL_VIDEO, {
           input: {
-            prompt:       buildVideoPrompt(scene.motionPrompt || scene.imagePrompt, script.characterStyle),
+            prompt:       buildVideoPrompt(scene.motionPrompt || scene.imagePrompt),
             image_url:    imageUrl,
             duration:     '5',
             aspect_ratio: aspectRatio,
@@ -338,7 +306,7 @@ JSON만 출력:
         imageUrl   = await fal.storage.upload(new File([blob], `scene-${idx}.jpg`, { type: 'image/jpeg' }));
       }
       const result = await fal.subscribe(MODEL_VIDEO, {
-        input: { prompt: buildVideoPrompt(scene.motionPrompt || scene.imagePrompt, script.characterStyle), image_url: imageUrl, duration: '5', aspect_ratio: aspectRatio } as any,
+        input: { prompt: buildVideoPrompt(scene.motionPrompt || scene.imagePrompt), image_url: imageUrl, duration: '5', aspect_ratio: aspectRatio } as any,
         pollInterval: 4_000,
       }) as any;
       const videoUri = result?.data?.video?.url as string | undefined;
