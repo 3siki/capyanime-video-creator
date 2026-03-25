@@ -27,6 +27,10 @@ const STYLE_ANCHOR = [
   'Japanese anime style', 'Studio Ghibli inspired', '2D flat illustration',
   'bold clean outlines', 'soft cel shading', 'vibrant saturated colors',
   'cinematic composition', 'high quality',
+  // silhouette rule for consistency
+  'all human figures and characters rendered as pure solid black silhouettes with no facial features no clothing details no skin visible',
+  'only the background environment and objects are in full color',
+  'silhouette style like mystery thriller anime',
   'absolutely no text', 'no letters', 'no words', 'no Korean', 'no Chinese', 'no Japanese characters',
   'no subtitles', 'no captions', 'no watermarks', 'no labels', 'no signs with writing',
   'no UI elements', 'text-free image',
@@ -117,12 +121,14 @@ export default function App() {
 특정 캐릭터 없이, 장면의 내용과 분위기를 직접적으로 묘사하는 방식으로 구성해.
 
 **imagePrompt 작성 규칙 (매우 중요):**
-- 장면의 실제 내용을 직접 묘사할 것 — 사람/인물이 등장하면 사람으로 그릴 것
-- 배경, 환경, 소품을 구체적이고 풍부하게 묘사 (단순 배경 금지)
+⚠️ 인물/사람 표현 규칙 — 일관성을 위해 실루엣 처리:
+- 등장인물은 반드시 "solid black silhouette figure" 로만 묘사할 것
+- 얼굴, 의상 디테일, 피부색 등 절대 묘사 금지 — 오직 검은 실루엣
+- 인물의 포즈/행동/실루엣 형태로만 상황을 전달 (예: "silhouette of a person raising a fist", "two silhouettes facing each other")
+- 배경, 환경, 소품은 풀컬러 애니 스타일로 풍부하게 묘사
 - 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
-- 인물은 실제 특징을 애니 스타일로 과장해서 표현 (의상, 헤어, 표정 등)
-- 긴장감 있는 장면: dramatic shadows, intense expressions, dynamic angles
-- 감동적인 장면: warm golden lighting, soft focus, emotional facial expressions
+- 긴장감: dramatic back-lighting, long shadows, high contrast
+- 감동/희망: warm golden light silhouetting the figure, soft glow
 - ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자만 허용
 
 **motionPrompt:** 카메라 움직임 + 인물 행동 + 배경 변화를 구체적으로 (영어)
