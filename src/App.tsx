@@ -19,7 +19,7 @@ import {
 
 // ─── Models ──────────────────────────────────────────────────────────────────
 const MODEL_SCRIPT = 'claude-sonnet-4-6';
-const MODEL_IMAGE  = 'fal-ai/flux/schnell';
+const MODEL_IMAGE  = 'fal-ai/flux/dev';  // ~$0.025/image, 50스텝, 고품질
 const MODEL_VIDEO  = 'fal-ai/kling-video/v1.6/standard/image-to-video';
 
 // ─── Character & Style Anchors ───────────────────────────────────────────────
@@ -204,7 +204,8 @@ JSON만 출력:
               prompt: buildImagePrompt(script.scenes[i].imagePrompt, script.characterStyle),
               image_size: imageSize,
               num_images: 1,
-              num_inference_steps: 4,
+              num_inference_steps: 28,
+              guidance_scale: 3.5,
             },
           }) as any;
           const url = res?.data?.images?.[0]?.url as string | undefined;
@@ -234,7 +235,7 @@ JSON만 출력:
         const res = await fal.subscribe(MODEL_IMAGE, {
           input: {
             prompt: buildImagePrompt(script.scenes[idx].imagePrompt, script.characterStyle),
-            image_size: imageSize, num_images: 1, num_inference_steps: 4,
+            image_size: imageSize, num_images: 1, num_inference_steps: 28, guidance_scale: 3.5,
           },
         }) as any;
         const url = res?.data?.images?.[0]?.url as string | undefined;
