@@ -7,8 +7,6 @@
 import { useState } from 'react';
 import Anthropic from '@anthropic-ai/sdk';
 import { fal } from '@fal-ai/client';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles, Play, Pause, Download, Loader2,
@@ -42,6 +40,41 @@ interface GeneratedScript {
   title:  string;
   scenes: Scene[];
 }
+
+// ─── Character & Style Anchors ───────────────────────────────────────────────
+
+// 모든 이미지에 일관되게 적용되는 캐릭터+스타일 고정 프롬프트
+const CHAR_ANCHOR = [
+  'single capybara character',
+  'round chubby body',
+  'short stubby legs',
+  'small rounded ears',
+  'tiny expressive black dot eyes',
+  'warm medium-brown fur',
+  'slightly open calm smile',
+  'chibi anime proportions',
+  'large head small body ratio',
+].join(', ');
+
+const STYLE_ANCHOR = [
+  'Japanese anime style',
+  'Studio Ghibli inspired',
+  '2D flat illustration',
+  'bold clean outlines',
+  'soft cel shading',
+  'vibrant saturated colors',
+  'comic expressive mood',
+  'high quality',
+  'no text',
+  'no watermarks',
+  'no subtitles',
+].join(', ');
+
+const buildImagePrompt = (scenePrompt: string) =>
+  `${CHAR_ANCHOR}, ${STYLE_ANCHOR}, ${scenePrompt}`;
+
+const buildVideoPrompt = (scenePrompt: string) =>
+  `${CHAR_ANCHOR}, ${STYLE_ANCHOR}, smooth cinematic animation, dynamic camera movement with slow pan and gentle zoom, character moves and reacts expressively, ${scenePrompt}`;
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
@@ -156,7 +189,7 @@ export default function App() {
             }
             const imgRes = await fal.subscribe(MODEL_IMAGE, {
               input: {
-                prompt: `Japanese anime style, cute fluffy capybara as protagonist, vibrant colors, cinematic lighting, high quality illustration, no text, no watermarks, no subtitles. ${scene.imagePrompt}`,
+                prompt: buildImagePrompt(scene.imagePrompt),
                 image_size: imageSize,
                 num_images: 1,
                 num_inference_steps: 4,
@@ -211,7 +244,7 @@ export default function App() {
 
             if (!imageUrl) throw new Error('이미지가 없어 영상 생성 불가');
 
-            const motionPrompt = `Japanese anime style, cute fluffy capybara character, smooth cinematic animation with dynamic camera movement — slow pan, gentle zoom, subtle parallax, vibrant colors, high quality, no text, no watermarks. ${scene.imagePrompt}`;
+            const motionPrompt = buildVideoPrompt(scene.imagePrompt);
 
             const result = await fal.subscribe(MODEL_VIDEO, {
               input: {
@@ -279,7 +312,7 @@ export default function App() {
 
       const result = await fal.subscribe(MODEL_VIDEO, {
         input: {
-          prompt:       `Japanese anime style, cute fluffy capybara character, smooth cinematic animation with dynamic camera movement — slow pan, gentle zoom, vibrant colors, high quality, no text. ${scene.imagePrompt}`,
+          prompt:       buildVideoPrompt(scene.imagePrompt),
           image_url:    imageUrl,
           duration:     '5',
           aspect_ratio: aspectRatio,
@@ -303,7 +336,7 @@ export default function App() {
     setScript({ ...script, scenes });
   };
 
-  // ── Merge all videos into one ───────────────────────────────────────────────
+  // ── Merge all videos via Canvas + MediaRecorder (GPU-accelerated, no libs) ──
   const mergeVideos = async () => {
     if (!script || isMerging) return;
     const readyScenes = script.scenes.filter(s => s.videoUrl);
@@ -313,30 +346,59 @@ export default function App() {
     setMergedVideoUrl(null);
 
     try {
-      setMergeProgress('FFmpeg 로딩 중... (첫 실행시 30초 소요)');
-      const ffmpeg  = new FFmpeg();
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      // Load first video to get dimensions
+      setMergeProgress('영상 크기 확인 중...');
+      const firstVid = document.createElement('video');
+      firstVid.src = readyScenes[0].videoUrl!;
+      firstVid.muted = true;
+      await new Promise<void>(r => { firstVid.onloadedmetadata = () => r(); firstVid.load(); });
 
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`,   'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      const W = firstVid.videoWidth  || 1080;
+      const H = firstVid.videoHeight || 1920;
 
-      setMergeProgress('영상 파일 처리 중...');
+      const canvas  = document.createElement('canvas');
+      canvas.width  = W;
+      canvas.height = H;
+      const ctx     = canvas.getContext('2d')!;
+
+      // Pick best supported codec
+      const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+        .find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm';
+
+      const stream   = canvas.captureStream(30);
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.start(100);
+
       for (let i = 0; i < readyScenes.length; i++) {
-        setMergeProgress(`영상 불러오는 중... (${i + 1}/${readyScenes.length})`);
-        await ffmpeg.writeFile(`input${i}.mp4`, await fetchFile(readyScenes[i].videoUrl!));
+        setMergeProgress(`영상 합치는 중... (${i + 1}/${readyScenes.length})`);
+        const vid = document.createElement('video');
+        vid.src   = readyScenes[i].videoUrl!;
+        vid.muted = true;
+
+        await new Promise<void>((resolve, reject) => {
+          vid.onloadeddata = () => {
+            vid.play().catch(reject);
+            const draw = () => {
+              if (vid.ended) { resolve(); return; }
+              ctx.drawImage(vid, 0, 0, W, H);
+              requestAnimationFrame(draw);
+            };
+            requestAnimationFrame(draw);
+          };
+          vid.onerror = () => reject(new Error(`영상 ${i + 1} 로드 실패`));
+          vid.load();
+        });
+
+        // small gap between clips
+        await sleep(100);
       }
 
-      // concat list
-      const concatList = readyScenes.map((_, i) => `file 'input${i}.mp4'`).join('\n');
-      await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatList));
+      recorder.stop();
+      await new Promise<void>(r => { recorder.onstop = () => r(); });
 
-      setMergeProgress('영상 합치는 중...');
-      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'output.mp4']);
-
-      const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
-      const blob = new Blob([data], { type: 'video/mp4' });
+      const blob = new Blob(chunks, { type: mimeType });
       setMergedVideoUrl(URL.createObjectURL(blob));
       setMergeProgress('완성!');
     } catch (e: any) {
@@ -370,7 +432,7 @@ export default function App() {
     if (!mergedVideoUrl) return;
     const a   = document.createElement('a');
     a.href     = mergedVideoUrl;
-    a.download = `capyanime-merged.mp4`;
+    a.download = `capyanime-merged.webm`;
     a.click();
   };
 
