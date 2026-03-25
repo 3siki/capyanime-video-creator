@@ -30,7 +30,10 @@ const CHAR_ANCHOR = [
 const STYLE_ANCHOR = [
   'Japanese anime style', 'Studio Ghibli inspired', '2D flat illustration',
   'bold clean outlines', 'soft cel shading', 'vibrant saturated colors',
-  'comic expressive mood', 'high quality', 'no text', 'no watermarks', 'no subtitles',
+  'comic expressive mood', 'high quality',
+  'absolutely no text', 'no letters', 'no words', 'no Korean', 'no Chinese', 'no Japanese characters',
+  'no subtitles', 'no captions', 'no watermarks', 'no labels', 'no signs with writing',
+  'no UI elements', 'text-free image',
 ].join(', ');
 
 const buildImagePrompt = (p: string, characterStyle?: string) =>
@@ -139,9 +142,10 @@ export default function App() {
 - 분위기에 맞는 조명, 색감, 날씨, 시간대 포함
 - 장면의 소품, 환경 요소 세세하게 묘사
 - 귀엽고 코믹한 애니 느낌의 과장된 표현 활용
-- 글자/텍스트/자막 절대 금지
-좋은 예시: "capybara standing on a moonlit stage with dramatic spotlights, glittering star-shaped confetti raining down, crowd silhouettes below cheering, warm amber and purple stage lighting, vintage concert posters on background walls, smoke machine fog at feet"
-나쁜 예시: "capybara on a stage"
+- ⛔ 글자/한국어/한자/일본어/간판 문구 절대 금지. 숫자나 영어 한두 글자는 허용 (예: "DEA", "88")
+- 간판이나 포스터가 필요하면 문자 없이 그림/패턴으로만 표현할 것
+좋은 예시: "capybara standing on a moonlit stage with dramatic spotlights, glittering star-shaped confetti raining down, crowd silhouettes below cheering, warm amber and purple stage lighting, decorative star-patterned banners on background walls, smoke machine fog at feet"
+나쁜 예시: "capybara on a stage with Korean text signs"
 
 **motionPrompt:** 카메라 움직임 + 캐릭터 행동 + 배경 움직임을 구체적으로 (영어)
 
